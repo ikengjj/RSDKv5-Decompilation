@@ -1,149 +1,108 @@
 #ifndef DEBUG_H
 #define DEBUG_H
 
-// These being different sizes will surely cause issues if more then VIEWVAR_LIST_COUNT values are set
-// But that's how the code is in the original so what can ya do
-#define VIEWVAR_COUNT      (0x900)
-#define VIEWVAR_LIST_COUNT (0x40)
-
-#include <stdarg.h>
-
-namespace RSDK
-{
-
-enum PrintModes {
-    PRINT_NORMAL,
-    PRINT_POPUP,
-    PRINT_ERROR,
-    PRINT_FATAL,
-#if RETRO_REV0U
-    PRINT_SCRIPTERR,
+#if RETRO_PLATFORM == RETRO_ANDROID
+#include <android/log.h>
 #endif
-};
 
+extern bool endLine;
+inline void PrintLog(const char *msg, ...)
+{
+#ifndef RETRO_DISABLE_LOG
+    if (engineDebugMode) {
+        char buffer[0x100];
+
+        // make the full string
+        va_list args;
+        va_start(args, msg);
+        vsprintf(buffer, msg, args);
+        if (endLine) {
+            printf("%s\n", buffer);
+            sprintf(buffer, "%s\n", buffer);
+        }
+        else {
+            printf("%s", buffer);
+            sprintf(buffer, "%s", buffer);
+        }
+
+        char pathBuffer[0x100];
+#if RETRO_PLATFORM == RETRO_UWP
+        if (!usingCWD)
+            sprintf(pathBuffer, "%s/log.txt", getResourcesPath());
+        else
+            sprintf(pathBuffer, "log.txt");
+#elif RETRO_PLATFORM == RETRO_ANDROID
+        sprintf(pathBuffer, "%s/log.txt", gamePath);
+        __android_log_print(ANDROID_LOG_INFO, "RSDKv4", "%s", buffer);
+#else
+        sprintf(pathBuffer, BASE_PATH "log.txt");
+#endif
+        FileIO *file = fOpen(pathBuffer, "a");
+        if (file) {
+            fWrite(&buffer, 1, StrLength(buffer), file);
+            fClose(file);
+        }
+    }
+#endif
+}
+
+inline void PrintLog(const ushort *msg)
+{
+#ifndef RETRO_DISABLE_LOG
+    if (engineDebugMode) {
+        int mPos = 0;
+        while (msg[mPos]) {
+            printf("%lc", (ushort)msg[mPos]);
+            mPos++;
+        }
+        if (endLine)
+            printf("\n");
+
+        char pathBuffer[0x100];
+#if RETRO_PLATFORM == RETRO_UWP
+        if (!usingCWD)
+            sprintf(pathBuffer, "%s/log.txt", getResourcesPath());
+        else
+            sprintf(pathBuffer, "log.txt");
+#elif RETRO_PLATFORM == RETRO_ANDROID
+        sprintf(pathBuffer, "%s/log.txt", gamePath);
+        __android_log_print(ANDROID_LOG_INFO, "RSDKv4", "%ls", (wchar_t *)msg);
+#else
+        sprintf(pathBuffer, BASE_PATH "log.txt");
+#endif
+        mPos         = 0;
+        FileIO *file = fOpen(pathBuffer, "a");
+        if (file) {
+            while (msg[mPos]) {
+                fWrite(&msg[mPos], 2, 1, file);
+                mPos++;
+            }
+
+            ushort el = '\n';
+            if (endLine)
+                fWrite(&el, 2, 1, file);
+            fClose(file);
+        }
+    }
+#endif
+}
+
+enum DevMenuMenus {
+    DEVMENU_MAIN,
+    DEVMENU_PLAYERSEL,
+    DEVMENU_STAGELISTSEL,
+    DEVMENU_STAGESEL,
+    DEVMENU_SCRIPTERROR,
 #if !RETRO_USE_ORIGINAL_CODE
-enum TouchCornerButtons {
-    CORNERBUTTON_START,
-    CORNERBUTTON_LEFTRIGHT,
-    CORNERBUTTON_SLIDER,
-};
-#endif
-
-extern bool32 engineDebugMode;
-extern bool32 useEndLine;
-extern char outputString[0x400];
-
-void PrintLog(int32 mode, const char *message, ...);
-
-#if !RETRO_REV02
-enum PrintMessageTypes {
-    MESSAGE_STRING,
-    MESSAGE_INT32,
-    MESSAGE_UINT32,
-    MESSAGE_FLOAT,
-};
-
-void PrintMessage(void *msg, uint8 type);
-#endif
-
-#if RETRO_REV02
-inline void PrintText(int32 mode, const char *message) { PrintLog(mode, "%s", message); }
-inline void PrintString(int32 mode, String *message)
-{
-    useEndLine = false;
-
-    for (int32 c = 0; c < message->length; ++c) PrintLog(mode, "%c", message->chars[c]);
-    PrintLog(mode, "\n");
-
-    useEndLine = true;
-}
-inline void PrintUInt32(int32 mode, const char *message, uint32 integer) { PrintLog(mode, "%s: %u", message, integer); }
-inline void PrintInt32(int32 mode, const char *message, int32 integer) { PrintLog(mode, "%s: %d", message, integer); }
-inline void PrintFloat(int32 mode, const char *message, float f) { PrintLog(mode, "%s: %f", message, f); }
-inline void PrintVector2(int32 mode, const char *message, Vector2 vec)
-{
-    PrintLog(mode, "%s: <%c%08X, %c%08X>", message, vec.x < 0 ? '-' : ' ', abs(vec.x), vec.y < 0 ? '-' : ' ', abs(vec.y));
-}
-inline void PrintHitbox(int32 mode, const char *message, Hitbox hitbox)
-{
-    PrintLog(mode, "%s: <l: %d, r: %d, t: %d, b: %d>", message, hitbox.left, hitbox.right, hitbox.top, hitbox.bottom);
-}
-
-struct ViewableVariable {
-    char name[0x10];
-    void *value;
-    int32 type;
-    int32 size;
-    int32 min;
-    int32 max;
-};
-
-typedef enum {
-    VIEWVAR_INVALID,
-    VIEWVAR_BOOL,
-    VIEWVAR_UINT8,
-    VIEWVAR_UINT16,
-    VIEWVAR_UINT32,
-    VIEWVAR_INT8,
-    VIEWVAR_INT16,
-    VIEWVAR_INT32,
-} ViewableVarTypes;
-
-typedef enum {
-    VIEWVAR_DISPLAY_BOOL,
-    VIEWVAR_DISPLAY_UNSIGNED,
-    VIEWVAR_DISPLAY_SIGNED,
-} DebugVarDisplayTypes;
-
-extern int32 viewableVarCount;
-extern ViewableVariable viewableVarList[VIEWVAR_LIST_COUNT];
-
-inline void ClearViewableVariables() { viewableVarCount = 0; }
-void AddViewableVariable(const char *name, void *value, int32 type, int32 min, int32 max);
-#endif
-
-struct DevMenu {
-    void (*state)();
-    int32 selection;
-    int32 scrollPos;
-    int32 timer;
-    bool32 windowed;
-    int8 sceneState;
-    int8 listPos;
-    int8 windowScale;
-    int8 windowAspect;
-#if RETRO_USE_MOD_LOADER
-    bool32 modsChanged;
-    uint8 startingVersion;
-#if RETRO_REV0U
-    int32 playerListPos;
-#endif
+    DEVMENU_MODMENU
 #endif
 };
 
-extern DevMenu devMenu;
+void InitDevMenu();
+void InitErrorMessage();
+void ProcessStageSelect();
 
-void DevMenu_MainMenu();
-void DevMenu_CategorySelectMenu();
-void DevMenu_SceneSelectMenu();
-void DevMenu_OptionsMenu();
-void DevMenu_VideoOptionsMenu();
-void DevMenu_AudioOptionsMenu();
-void DevMenu_InputOptionsMenu();
-void DevMenu_KeyMappingsMenu();
-#if RETRO_REV02
-void DevMenu_DebugOptionsMenu();
-#endif
-#if RETRO_USE_MOD_LOADER
-void DevMenu_ModsMenu();
-#endif
-#if RETRO_REV0U && RETRO_USE_MOD_LOADER
-void DevMenu_PlayerSelectMenu();
-#endif
+// Not in original, but the code was, and its cleaner this way
+void SetTextMenu(int mode);
 
-void OpenDevMenu();
-void CloseDevMenu();
-
-#endif
-
-} // namespace RSDK
+#endif //! DEBUG_H
