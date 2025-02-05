@@ -1,329 +1,201 @@
 #ifndef OBJECT_H
 #define OBJECT_H
 
-#if RETRO_USE_MOD_LOADER
-#include <functional>
-#endif
+#define NATIVEENTITY_COUNT (0x100)
 
-namespace RSDK
-{
+#define ENTITY_COUNT     (0x4A0)
+#define TEMPENTITY_START (ENTITY_COUNT - 0x80)
+#define OBJECT_COUNT     (0x100)
+#define TYPEGROUP_COUNT  (0x103)
 
-#define RSDK_SIGNATURE_OBJ (0x4A424F) // "OBJ"
-
-#define OBJECT_COUNT (0x400)
-
-// 0x800 scene objects, 0x40 reserved ones, and 0x100 spare slots for creation
-#define RESERVE_ENTITY_COUNT (0x40)
-#define TEMPENTITY_COUNT     (0x100)
-#define SCENEENTITY_COUNT    (0x800)
-#define ENTITY_COUNT         (RESERVE_ENTITY_COUNT + SCENEENTITY_COUNT + TEMPENTITY_COUNT)
-#define TEMPENTITY_START     (ENTITY_COUNT - TEMPENTITY_COUNT)
-
-#define TYPE_COUNT        (0x100)
-#define EDITABLEVAR_COUNT (0x100)
-#define TYPEGROUP_COUNT   (0x104)
-
-#define FOREACH_STACK_COUNT (0x400)
-
-// Used for DefaultObject & DevOutput
-#define RSDK_THIS(class) Entity##class *self = (Entity##class *)sceneInfo.entity
-
-enum StaticVariableTypes {
-    SVAR_UINT8,
-    SVAR_UINT16,
-    SVAR_UINT32,
-    SVAR_INT8,
-    SVAR_INT16,
-    SVAR_INT32,
-    SVAR_BOOL,
-    SVAR_POINTER,
-    SVAR_VECTOR2,
-    SVAR_STRING,
-    SVAR_ANIMATOR,
-    SVAR_HITBOX,
-    SVAR_SPRITEFRAME,
-};
-
-enum TypeGroups {
-    GROUP_ALL = 0,
-
-    GROUP_CUSTOM0 = TYPE_COUNT,
-    GROUP_CUSTOM1,
-    GROUP_CUSTOM2,
-    GROUP_CUSTOM3,
-};
-
-enum VariableTypes {
-    VAR_UINT8,
-    VAR_UINT16,
-    VAR_UINT32,
-    VAR_INT8,
-    VAR_INT16,
-    VAR_INT32,
-    VAR_ENUM,
-    VAR_BOOL,
-    VAR_STRING,
-    VAR_VECTOR2,
-    VAR_FLOAT, // Not actually used in Sonic Mania so it's just an assumption, but this is the only thing that'd fit the 32 bit limit and make sense
-    VAR_COLOR,
-};
-
-enum ActiveFlags {
-    ACTIVE_NEVER,   // never update
-    ACTIVE_ALWAYS,  // always update (even if paused/frozen)
-    ACTIVE_NORMAL,  // always update (unless paused/frozen)
-    ACTIVE_PAUSED,  // update only when paused/frozen
-    ACTIVE_BOUNDS,  // update if in x & y bounds
-    ACTIVE_XBOUNDS, // update only if in x bounds (y bounds dont matter)
-    ACTIVE_YBOUNDS, // update only if in y bounds (x bounds dont matter)
-    ACTIVE_RBOUNDS, // update based on radius boundaries (updateRange.x == radius)
-
-    // Not really even a real active value, but some objects set their active states to this so here it is I suppose
-    ACTIVE_DISABLED = 0xFF,
-};
-
-enum DefaultObjects {
-    TYPE_DEFAULTOBJECT = 0,
-#if RETRO_REV02
-    TYPE_DEVOUTPUT,
-#endif
-
-    TYPE_DEFAULT_COUNT, // max
-};
-
-struct Object {
-    int16 classID;
-    uint8 active;
-};
-
-struct Entity {
-#if RETRO_REV0U
-    // used for languages such as beeflang that always have vfTables in classes
-    void *vfTable;
-#endif
-    Vector2 position;
-    Vector2 scale;
-    Vector2 velocity;
-    Vector2 updateRange;
-    int32 angle;
-    int32 alpha;
-    int32 rotation;
-    int32 groundVel;
-    int32 zdepth;
-    uint16 group;
-    uint16 classID;
-    bool32 inRange;
-    bool32 isPermanent;
-    bool32 tileCollisions;
-    bool32 interaction;
-    bool32 onGround;
-    uint8 active;
-#if RETRO_REV02
-    uint8 filter;
-#endif
-    uint8 direction;
-    uint8 drawGroup;
-    uint8 collisionLayers;
-    uint8 collisionPlane;
-    uint8 collisionMode;
-    uint8 drawFX;
-    uint8 inkEffect;
-    uint8 visible;
-    uint8 onScreen;
-};
-
-struct EntityBase : Entity {
-    void *data[0x100];
-#if RETRO_REV0U
-    void *unknown;
-#endif
-};
-
-struct ObjectClass {
-    RETRO_HASH_MD5(hash);
-
-    // Events
-#if RETRO_USE_MOD_LOADER // using std::function makes it easier to use stuff like lambdas
-    std::function<void()> update;
-    std::function<void()> lateUpdate;
-    std::function<void()> staticUpdate;
-    std::function<void()> draw;
-    std::function<void(void *)> create;
-    std::function<void()> stageLoad;
-    std::function<void()> editorLoad;
-    std::function<void()> editorDraw;
-    std::function<void()> serialize;
-#if RETRO_REV0U
-    std::function<void(Object *)> staticLoad;
-#endif
-#else
-    void (*update)();
-    void (*lateUpdate)();
-    void (*staticUpdate)();
-    void (*draw)();
-    void (*create)(void *);
-    void (*stageLoad)();
-    void (*editorLoad)();
-    void (*editorDraw)();
-    void (*serialize)();
-#if RETRO_REV0U
-    void (*staticLoad)(Object *);
-#endif
-#endif
-
-    // Classes
-    Object **staticVars;
-    int32 entityClassSize;
-    int32 staticClassSize;
-
-#if RETRO_USE_MOD_LOADER
-    ObjectClass *inherited;
-#endif
-
-#if !RETRO_USE_ORIGINAL_CODE
-    const char *name; // for debugging purposes
-#endif
-};
-
-struct EditableVarInfo {
-    RETRO_HASH_MD5(hash);
-    int32 offset;
-    int32 active;
-    uint8 type;
-};
-
-struct ForeachStackInfo {
-    int32 id;
+enum ObjectControlModes {
+    CONTROLMODE_NONE   = -1,
+    CONTROLMODE_NORMAL = 0,
 };
 
 struct TypeGroupList {
-    uint16 entries[ENTITY_COUNT];
-    int32 entryCount;
+    int entityRefs[ENTITY_COUNT];
+    int listSize;
 };
 
-extern ObjectClass objectClassList[OBJECT_COUNT];
-extern int32 objectClassCount;
+struct Entity {
+    int xpos;
+    int ypos;
+    int xvel;
+    int yvel;
+    int speed;
+    int values[48];
+    int state;
+    int angle;
+    int scale;
+    int rotation;
+    int alpha;
+    int animationTimer;
+    int animationSpeed;
+    int lookPosX;
+    int lookPosY;
+    ushort groupID;
+    byte type;
+    byte propertyValue;
+    byte priority;
+    byte drawOrder;
+    byte direction;
+    byte inkEffect;
+    byte animation;
+    byte prevAnimation;
+    byte frame;
+    byte collisionMode;
+    byte collisionPlane;
+    sbyte controlMode;
+    byte controlLock;
+    byte pushing;
+    byte visible;
+    byte tileCollisions;
+    byte objectInteractions;
+    byte gravity;
+    byte left;
+    byte right;
+    byte up;
+    byte down;
+    byte jumpPress;
+    byte jumpHold;
+    byte scrollTracking;
+    // was 3 on S1 release, but bumped up to 5 for S2
+    byte floorSensors[RETRO_REV00 ? 3 : 5];
+};
 
-// Loaded Global Objects
-extern int32 globalObjectCount;
-extern int32 globalObjectIDs[OBJECT_COUNT];
+struct NativeEntityBase {
+    void (*eventCreate)(void *objPtr);
+    void (*eventMain)(void *objPtr);
+    int slotID;
+    int objectID;
+};
 
-// Loaded Stage Objects (includes Globals if "loadGlobals" is enabled)
-extern int32 stageObjectIDs[OBJECT_COUNT];
+struct NativeEntity {
+    void (*eventCreate)(void *objPtr);
+    void (*eventMain)(void *objPtr);
+    int slotID;
+    int objectID;
+    void *extra[0x100];
+};
 
-extern EntityBase objectEntityList[ENTITY_COUNT];
+enum ObjectTypes {
+    OBJ_TYPE_BLANKOBJECT = 0 // 0 is always blank obj
+};
 
-extern EditableVarInfo *editableVarList;
-extern int32 editableVarCount;
+enum ObjectGroups {
+    GROUP_ALL = 0 // 0 is always "all"
+};
 
-extern ForeachStackInfo foreachStackList[FOREACH_STACK_COUNT];
-extern ForeachStackInfo *foreachStackPtr;
+enum ObjectPriority {
+    // The entity is active if the entity is on screen or within 128 pixels of the screen borders on any axis
+    PRIORITY_BOUNDS,
+    // The entity is always active, unless the stage state is PAUSED/FROZEN
+    PRIORITY_ACTIVE,
+    // Same as PRIORITY_ACTIVE, the entity even runs when the stage state is PAUSED/FROZEN
+    PRIORITY_ALWAYS,
+    // Same as PRIORITY_BOUNDS, however it only does checks on the x-axis, so when in bounds on the x-axis, the y position doesn't matter
+    PRIORITY_XBOUNDS,
+    // Same as PRIORITY_XBOUNDS, however the entity's type will be set to BLANK OBJECT when it becomes inactive
+    PRIORITY_XBOUNDS_DESTROY,
+    // Never Active.
+    PRIORITY_INACTIVE,
+    // Same as PRIORITY_BOUNDS, but uses the smaller bounds (32px off screen rather than the normal 128)
+    PRIORITY_BOUNDS_SMALL,
+    // Same as PRIORITY_ACTIVE, but uses the smaller bounds in object.outOfBounds
+    PRIORITY_ACTIVE_SMALL
+};
 
-extern TypeGroupList typeGroups[TYPEGROUP_COUNT];
+// Native Objects
+extern int nativeEntityPos;
 
-extern bool32 validDraw;
+extern int activeEntityList[NATIVEENTITY_COUNT];
+extern byte objectRemoveFlag[NATIVEENTITY_COUNT];
+extern NativeEntity objectEntityBank[NATIVEENTITY_COUNT];
+extern int nativeEntityCount;
 
-#if RETRO_REV0U
-void RegisterObject(Object **staticVars, const char *name, uint32 entityClassSize, uint32 staticClassSize, void (*update)(), void (*lateUpdate)(),
-                    void (*staticUpdate)(), void (*draw)(), void (*create)(void *), void (*stageLoad)(), void (*editorLoad)(), void (*editorDraw)(),
-                    void (*serialize)(), void (*staticLoad)(Object *));
+extern int nativeEntityCountBackup;
+extern int backupEntityList[NATIVEENTITY_COUNT];
+extern NativeEntity objectEntityBackup[NATIVEENTITY_COUNT];
 
-#if RETRO_USE_MOD_LOADER
-void RegisterObject_STD(Object **staticVars, const char *name, uint32 entityClassSize, uint32 staticClassSize, std::function<void()> update,
-                        std::function<void()> lateUpdate, std::function<void()> staticUpdate, std::function<void()> draw,
-                        std::function<void(void *)> create, std::function<void()> stageLoad, std::function<void()> editorLoad,
-                        std::function<void()> editorDraw, std::function<void()> serialize, std::function<void(Object *)> staticLoad);
-#endif
-#else
-void RegisterObject(Object **staticVars, const char *name, uint32 entityClassSize, uint32 staticClassSize, void (*update)(), void (*lateUpdate)(),
-                    void (*staticUpdate)(), void (*draw)(), void (*create)(void *), void (*stageLoad)(), void (*editorLoad)(), void (*editorDraw)(),
-                    void (*serialize)());
+extern int nativeEntityCountBackupS;
+extern int backupEntityListS[NATIVEENTITY_COUNT];
+extern NativeEntity objectEntityBackupS[NATIVEENTITY_COUNT];
 
-#if RETRO_USE_MOD_LOADER
-void RegisterObject_STD(Object **staticVars, const char *name, uint32 entityClassSize, uint32 staticClassSize, std::function<void()> update,
-                        std::function<void()> lateUpdate, std::function<void()> staticUpdate, std::function<void()> draw,
-                        std::function<void(void *)> create, std::function<void()> stageLoad, std::function<void()> editorLoad,
-                        std::function<void()> editorDraw, std::function<void()> serialize);
-#endif
-#endif
+// Game Objects
+extern int objectEntityPos;
+extern int curObjectType;
+extern Entity objectEntityList[ENTITY_COUNT * 2];
+extern int processObjectFlag[ENTITY_COUNT];
+extern TypeGroupList objectTypeGroupList[TYPEGROUP_COUNT];
 
-#if RETRO_REV02 || RETRO_USE_MOD_LOADER
-void RegisterStaticVariables(void **varClass, const char *name, uint32 classSize);
-#endif
+extern char typeNames[OBJECT_COUNT][0x40];
 
-void LoadStaticVariables(uint8 *classPtr, uint32 *hash, int32 readOffset);
+extern int OBJECT_BORDER_X1;
+extern int OBJECT_BORDER_X2;
+extern int OBJECT_BORDER_X3;
+extern int OBJECT_BORDER_X4;
+extern const int OBJECT_BORDER_Y1;
+extern const int OBJECT_BORDER_Y2;
+extern const int OBJECT_BORDER_Y3;
+extern const int OBJECT_BORDER_Y4;
 
-#define RSDK_EDITABLE_VAR(object, type, var) RSDK.SetEditableVar(type, #var, (uint8)object->classID, offsetof(Entity##object, var))
-
-// Bug Details(?):
-// classID isn't used AND is a uint8, how strange
-// assuming classID would be used in-editor (it is in RetroED2, but not sure about official RSDK SDK)
-// not sure why it's a uint8, given the original value is a uint16, so there's some small warnings about that
-inline void SetEditableVar(uint8 type, const char *name, uint8 classID, int32 offset)
-{
-    if (editableVarCount < EDITABLEVAR_COUNT - 1) {
-        EditableVarInfo *var = &editableVarList[editableVarCount];
-
-        GEN_HASH_MD5(name, var->hash);
-        var->type   = type;
-        var->offset = offset;
-        var->active = true;
-
-        editableVarCount++;
-    }
-}
-
-inline void SetActiveVariable(int32 classID, const char *name)
-{
-    // Editor-Only function
-}
-inline void AddEnumVariable(const char *name)
-{
-    // Editor-Only function
-}
-
-void InitObjects();
+void ProcessStartupObjects();
 void ProcessObjects();
 void ProcessPausedObjects();
 void ProcessFrozenObjects();
-void ProcessObjectDrawLists();
-
-uint16 FindObject(const char *name);
-
-inline Entity *GetEntity(uint16 slot) { return &objectEntityList[slot < ENTITY_COUNT ? slot : (ENTITY_COUNT - 1)]; }
-inline int32 GetEntitySlot(EntityBase *entity) { return (int32)((uint32)(entity - objectEntityList) < ENTITY_COUNT ? entity - objectEntityList : 0); }
-int32 GetEntityCount(uint16 classID, bool32 isActive);
-
-void ResetEntity(Entity *entity, uint16 classID, void *data);
-void ResetEntitySlot(uint16 slot, uint16 classID, void *data);
-Entity *CreateEntity(uint16 classID, void *data, int32 x, int32 y);
-
-inline void CopyEntity(void *destEntity, void *srcEntity, bool32 clearSrcEntity)
-{
-    if (destEntity && srcEntity) {
-        memcpy(destEntity, srcEntity, sizeof(EntityBase));
-
-        if (clearSrcEntity)
-            memset(srcEntity, 0, sizeof(EntityBase));
-    }
-}
-
-bool32 GetActiveEntities(uint16 group, Entity **entity);
-bool32 GetAllEntities(uint16 classID, Entity **entity);
-
-inline void BreakForeachLoop() { --foreachStackPtr; }
-
-// CheckPosOnScreen but if range is NULL it'll use entity->updateRange
-bool32 CheckOnScreen(Entity *entity, Vector2 *range);
-// Checks if a position is on screen & within range
-bool32 CheckPosOnScreen(Vector2 *position, Vector2 *range);
-
-void ClearStageObjects();
-
-#if RETRO_REV0U
-#include "Legacy/ObjectLegacy.hpp"
+#if !RETRO_REV00
+void Process2PObjects();
 #endif
 
-} // namespace RSDK
+void SetObjectTypeName(const char *objectName, int objectID);
+
+extern int playerListPos;
+
+void ProcessObjectControl(Entity *entity);
+
+void InitNativeObjectSystem();
+NativeEntity *CreateNativeObject(void (*objCreate)(void *objPtr), void (*objMain)(void *objPtr));
+void RemoveNativeObject(NativeEntityBase *NativeEntry);
+void ResetNativeObject(NativeEntityBase *obj, void (*objCreate)(void *objPtr), void (*objMain)(void *objPtr));
+void ProcessNativeObjects();
+inline void BackupNativeObjects()
+{
+    memcpy(backupEntityList, activeEntityList, sizeof(activeEntityList));
+    memcpy(objectEntityBackup, objectEntityBank, sizeof(objectEntityBank));
+    nativeEntityCountBackup = nativeEntityCount;
+}
+inline void BackupNativeObjectsSettings()
+{
+    memcpy(backupEntityListS, activeEntityList, sizeof(activeEntityList));
+    memcpy(objectEntityBackupS, objectEntityBank, sizeof(objectEntityBank));
+    nativeEntityCountBackupS = nativeEntityCount;
+}
+void RestoreNativeObjects();
+void RestoreNativeObjectsNoFade();
+void RestoreNativeObjectsSettings();
+inline NativeEntity *GetNativeObject(uint objID)
+{
+    if (objID >= NATIVEENTITY_COUNT)
+        return nullptr;
+    else
+        return &objectEntityBank[objID];
+}
+
+// Custom, used for cleaning purposes
+inline void RemoveNativeObjectType(void (*eventCreate)(void *objPtr), void (*eventMain)(void *objPtr))
+{
+    for (int i = nativeEntityCount - 1; i >= 0; --i) {
+        NativeEntity *entity = &objectEntityBank[activeEntityList[i]];
+        if (entity->eventCreate == eventCreate && entity->eventMain == eventMain) {
+            RemoveNativeObject((NativeEntityBase *)entity);
+        }
+    }
+}
+inline void ClearNativeObjects()
+{
+    nativeEntityCount = 0;
+    memset(objectEntityBank, 0, sizeof(objectEntityBank));
+}
 
 #endif // !OBJECT_H

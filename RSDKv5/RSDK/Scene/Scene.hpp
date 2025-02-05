@@ -1,329 +1,270 @@
 #ifndef SCENE_H
 #define SCENE_H
 
-namespace RSDK
-{
+#define LAYER_COUNT    (9)
+#define DEFORM_STORE   (256)
+#define DEFORM_SIZE    (320)
+#define DEFORM_COUNT   (DEFORM_STORE + DEFORM_SIZE)
+#define PARALLAX_COUNT (0x100)
 
 #define TILE_COUNT    (0x400)
 #define TILE_SIZE     (0x10)
+#define CHUNK_SIZE    (0x80)
 #define TILE_DATASIZE (TILE_SIZE * TILE_SIZE)
 #define TILESET_SIZE  (TILE_COUNT * TILE_DATASIZE)
 
+#define TILELAYER_CHUNK_W          (0x100)
+#define TILELAYER_CHUNK_H          (0x100)
+#define TILELAYER_CHUNK_COUNT      (TILELAYER_CHUNK_W * TILELAYER_CHUNK_H)
+#define TILELAYER_LINESCROLL_COUNT (TILELAYER_CHUNK_H * CHUNK_SIZE)
+
+#define CHUNKTILE_COUNT (0x200 * (8 * 8))
+
 #define CPATH_COUNT (2)
 
-#define RSDK_SIGNATURE_CFG (0x474643) // "CFG"
-#define RSDK_SIGNATURE_SCN (0x4E4353) // "SCN"
-#define RSDK_SIGNATURE_TIL (0x4C4954) // "TIL"
+enum StageListNames {
+    STAGELIST_PRESENTATION,
+    STAGELIST_REGULAR,
+    STAGELIST_BONUS,
+    STAGELIST_SPECIAL,
+    STAGELIST_MAX, // StageList size
+};
 
-enum LayerTypes {
+enum TileLayerTypes {
+    LAYER_NOSCROLL,
     LAYER_HSCROLL,
     LAYER_VSCROLL,
-    LAYER_ROTOZOOM,
-    LAYER_BASIC,
+    LAYER_3DFLOOR,
+    LAYER_3DSKY,
 };
 
-struct SceneListInfo {
-    RETRO_HASH_MD5(hash);
-    char name[0x20];
-    uint16 sceneOffsetStart;
-    uint16 sceneOffsetEnd;
-    uint8 sceneCount;
-};
+enum StageModes {
+    STAGEMODE_LOAD,
+    STAGEMODE_NORMAL,
+    STAGEMODE_PAUSED,
+    STAGEMODE_FROZEN,
 
-struct SceneListEntry {
-    RETRO_HASH_MD5(hash);
-    char name[0x20];
-    char folder[0x10];
-    char id[0x08];
-#if RETRO_REV02
-    uint8 filter;
+#if !RETRO_REV00
+    STAGEMODE_2P,
+#endif
+
+    STAGEMODE_NORMAL_STEP,
+    STAGEMODE_PAUSED_STEP,
+    STAGEMODE_FROZEN_STEP,
+
+#if !RETRO_REV00
+    STAGEMODE_2P_STEP,
 #endif
 };
 
-enum CollisionModes {
-    CMODE_FLOOR,
-    CMODE_LWALL,
-    CMODE_ROOF,
-    CMODE_RWALL,
+enum TileInfo {
+    TILEINFO_INDEX,
+    TILEINFO_DIRECTION,
+    TILEINFO_VISUALPLANE,
+    TILEINFO_SOLIDITYA,
+    TILEINFO_SOLIDITYB,
+    TILEINFO_FLAGSA,
+    TILEINFO_ANGLEA,
+    TILEINFO_FLAGSB,
+    TILEINFO_ANGLEB,
 };
 
-enum EngineStates {
-    ENGINESTATE_LOAD,
-    ENGINESTATE_REGULAR,
-    ENGINESTATE_PAUSED,
-    ENGINESTATE_FROZEN,
-    ENGINESTATE_STEPOVER = 4,
-    ENGINESTATE_DEVMENU  = 8,
-    ENGINESTATE_VIDEOPLAYBACK,
-    ENGINESTATE_SHOWIMAGE,
-#if RETRO_REV02
-    ENGINESTATE_ERRORMSG,
-    ENGINESTATE_ERRORMSG_FATAL,
-#endif
-    ENGINESTATE_NONE,
-#if RETRO_REV0U
-    // Prolly origins-only, called by the ending so I assume this handles playing ending movies and returning to menu
-    ENGINESTATE_GAME_FINISHED,
-#endif
+enum DeformationModes {
+    DEFORM_FG,
+    DEFORM_FG_WATER,
+    DEFORM_BG,
+    DEFORM_BG_WATER,
+};
+
+enum CameraStyles {
+    CAMERASTYLE_FOLLOW,
+    CAMERASTYLE_EXTENDED,
+    CAMERASTYLE_EXTENDED_OFFSET_L,
+    CAMERASTYLE_EXTENDED_OFFSET_R,
+    CAMERASTYLE_HLOCKED,
 };
 
 struct SceneInfo {
-    Entity *entity;
-    SceneListEntry *listData;
-    SceneListInfo *listCategory;
-    int32 timeCounter;
-    int32 currentDrawGroup;
-    int32 currentScreenID;
-    uint16 listPos;
-    uint16 entitySlot;
-    uint16 createSlot;
-    uint16 classCount;
-    bool32 inEditor;
-    bool32 effectGizmo;
-    bool32 debugMode;
-    bool32 useGlobalObjects;
-    bool32 timeEnabled;
-    uint8 activeCategory;
-    uint8 categoryCount;
-    uint8 state;
-#if RETRO_REV02
-    uint8 filter;
-#endif
-    uint8 milliseconds;
-    uint8 seconds;
-    uint8 minutes;
+    char name[0x40];
+    char folder[0x40];
+    char id[0x40];
+    bool highlighted;
 };
 
-struct ScrollInfo {
-    int32 tilePos;
-    int32 parallaxFactor;
-    int32 scrollSpeed;
-    int32 scrollPos;
-    uint8 deform;
-    uint8 unknown; // stored in the scene, but always 0, never referenced in-engine either...
-};
-
-struct ScanlineInfo {
-    Vector2 position; // position of the scanline
-    Vector2 deform;   // deformation that should be applied (only applies to RotoZoom type)
+struct CollisionMasks {
+    sbyte floorMasks[TILE_COUNT * TILE_SIZE];
+    sbyte lWallMasks[TILE_COUNT * TILE_SIZE];
+    sbyte rWallMasks[TILE_COUNT * TILE_SIZE];
+    sbyte roofMasks[TILE_COUNT * TILE_SIZE];
+    uint angles[TILE_COUNT];
+    byte flags[TILE_COUNT];
 };
 
 struct TileLayer {
-    uint8 type;
-    uint8 drawGroup[CAMERA_COUNT];
-    uint8 widthShift;
-    uint8 heightShift;
-    uint16 xsize;
-    uint16 ysize;
-    Vector2 position;
-    int32 parallaxFactor;
-    int32 scrollSpeed;
-    int32 scrollPos;
-    int32 deformationOffset;
-    int32 deformationOffsetW;
-    int32 deformationData[0x400];
-    int32 deformationDataW[0x400];
-    void (*scanlineCallback)(ScanlineInfo *scanlines);
-    uint16 scrollInfoCount;
-    ScrollInfo scrollInfo[0x100];
-    RETRO_HASH_MD5(name);
-    uint16 *layout;
-    uint8 *lineScroll;
+    ushort tiles[TILELAYER_CHUNK_COUNT];
+    byte lineScroll[TILELAYER_LINESCROLL_COUNT];
+    int parallaxFactor;
+    int scrollSpeed;
+    int scrollPos;
+    int angle;
+    int xpos;
+    int ypos;
+    int zpos;
+    int deformationOffset;
+    int deformationOffsetW;
+    byte type;
+    byte xsize;
+    byte ysize;
 };
 
-struct CollisionMask {
-    uint8 floorMasks[TILE_SIZE];
-    uint8 lWallMasks[TILE_SIZE];
-    uint8 rWallMasks[TILE_SIZE];
-    uint8 roofMasks[TILE_SIZE];
+struct LineScroll {
+    int parallaxFactor[PARALLAX_COUNT];
+    int scrollSpeed[PARALLAX_COUNT];
+    int scrollPos[PARALLAX_COUNT];
+    int linePos[PARALLAX_COUNT];
+    int deform[PARALLAX_COUNT];
+    byte entryCount;
 };
 
-struct TileInfo {
-    uint8 floorAngle;
-    uint8 lWallAngle;
-    uint8 rWallAngle;
-    uint8 roofAngle;
-    uint8 flag;
+struct Tiles128x128 {
+    int gfxDataPos[CHUNKTILE_COUNT];
+    ushort tileIndex[CHUNKTILE_COUNT];
+    byte direction[CHUNKTILE_COUNT];
+    byte visualPlane[CHUNKTILE_COUNT];
+    byte collisionFlags[CPATH_COUNT][CHUNKTILE_COUNT];
 };
 
-extern ScanlineInfo *scanlines;
-extern TileLayer tileLayers[LAYER_COUNT];
+extern int stageListCount[STAGELIST_MAX];
+extern char stageListNames[STAGELIST_MAX][0x20];
+extern SceneInfo stageList[STAGELIST_MAX][0x100];
 
-extern CollisionMask collisionMasks[CPATH_COUNT][TILE_COUNT * 4]; // 1024 * 1 per direction
-extern TileInfo tileInfo[CPATH_COUNT][TILE_COUNT * 4];            // 1024 * 1 per direction
+extern int stageMode;
 
-#if RETRO_REV02
-extern bool32 forceHardReset;
-#endif
-extern char currentSceneFolder[0x10];
-extern char currentSceneID[0x10];
-#if RETRO_REV02
-extern uint8 currentSceneFilter;
-#endif
+extern int cameraTarget;
+extern int cameraStyle;
+extern int cameraEnabled;
+extern int cameraAdjustY;
+extern int xScrollOffset;
+extern int yScrollOffset;
+extern int cameraXPos;
+extern int cameraYPos;
+extern int cameraShift;
+extern int cameraLockedY;
+extern int cameraShakeX;
+extern int cameraShakeY;
+extern int cameraLag;
+extern int cameraLagStyle;
 
-extern SceneInfo sceneInfo;
+extern int curXBoundary1;
+extern int newXBoundary1;
+extern int curYBoundary1;
+extern int newYBoundary1;
+extern int curXBoundary2;
+extern int curYBoundary2;
+extern int waterLevel;
+extern int waterDrawPos;
+extern int newXBoundary2;
+extern int newYBoundary2;
 
-extern uint8 tilesetPixels[TILESET_SIZE * 4];
+extern int SCREEN_SCROLL_LEFT;
+extern int SCREEN_SCROLL_RIGHT;
+#define SCREEN_SCROLL_UP   ((SCREEN_YSIZE / 2) - 16)
+#define SCREEN_SCROLL_DOWN ((SCREEN_YSIZE / 2) + 16)
 
-void LoadSceneFolder();
-void LoadSceneAssets();
-void LoadTileConfig(char *filepath);
-void LoadStageGIF(char *filepath);
+extern int lastXSize;
+extern int lastYSize;
+
+extern bool pauseEnabled;
+extern bool timeEnabled;
+extern bool debugMode;
+extern int frameCounter;
+extern int stageMilliseconds;
+extern int stageSeconds;
+extern int stageMinutes;
+
+// Category and Scene IDs
+extern int activeStageList;
+extern int stageListPosition;
+extern char currentStageFolder[0x100];
+extern int actID;
+
+extern char titleCardText[0x100];
+extern byte titleCardWord2;
+
+extern byte activeTileLayers[4];
+extern byte tLayerMidPoint;
+extern TileLayer stageLayouts[LAYER_COUNT];
+
+extern int bgDeformationData0[DEFORM_COUNT];
+extern int bgDeformationData1[DEFORM_COUNT];
+extern int bgDeformationData2[DEFORM_COUNT];
+extern int bgDeformationData3[DEFORM_COUNT];
+
+extern LineScroll hParallax;
+extern LineScroll vParallax;
+
+extern Tiles128x128 tiles128x128;
+extern CollisionMasks collisionMasks[2];
+
+extern byte tilesetGFXData[TILESET_SIZE];
+
+extern ushort tile3DFloorBuffer[0x100 * 0x100];
+extern bool drawStageGFXHQ;
+
+void InitFirstStage();
+void InitStartingStage(int list, int stage, int player);
+void ProcessStage();
 
 void ProcessParallaxAutoScroll();
-void ProcessParallax(TileLayer *layer);
-void ProcessSceneTimer();
 
-void SetScene(const char *categoryName, const char *sceneName);
-inline void LoadScene()
+void ResetBackgroundSettings();
+inline void ResetCurrentStageFolder() { strcpy(currentStageFolder, ""); }
+inline bool CheckCurrentStageFolder(int stage)
 {
-    if ((sceneInfo.state & ENGINESTATE_STEPOVER) == ENGINESTATE_STEPOVER)
-        sceneInfo.state = ENGINESTATE_LOAD | ENGINESTATE_STEPOVER;
-    else
-        sceneInfo.state = ENGINESTATE_LOAD;
-}
-
-#if RETRO_REV02
-inline void ForceHardReset(bool32 shouldHardReset) { forceHardReset = shouldHardReset; }
-#endif
-
-inline bool32 CheckValidScene()
-{
-    if (sceneInfo.activeCategory >= sceneInfo.categoryCount)
+    if (strcmp(currentStageFolder, stageList[activeStageList][stage].folder) == 0) {
+        return true;
+    }
+    else {
+        strcpy(currentStageFolder, stageList[activeStageList][stage].folder);
         return false;
-
-    SceneListInfo *list = &sceneInfo.listCategory[sceneInfo.activeCategory];
-    return sceneInfo.listPos >= list->sceneOffsetStart && sceneInfo.listPos <= list->sceneOffsetEnd;
-}
-
-inline bool32 CheckSceneFolder(const char *folderName) { return strcmp(folderName, sceneInfo.listData[sceneInfo.listPos].folder) == 0; }
-
-inline uint16 GetTileLayerID(const char *name)
-{
-    RETRO_HASH_MD5(hash);
-    GEN_HASH_MD5(name, hash);
-
-    for (int32 i = 0; i < LAYER_COUNT; ++i) {
-        if (HASH_MATCH_MD5(tileLayers[i].name, hash))
-            return i;
     }
-
-    return (uint16)-1;
 }
 
-inline TileLayer *GetTileLayer(uint16 layerID) { return layerID < LAYER_COUNT ? &tileLayers[layerID] : NULL; }
+void LoadStageFiles();
+int LoadActFile(const char *ext, int stageID, FileInfo *info);
+int LoadStageFile(const char *filePath, int stageID, FileInfo *info);
 
-inline void GetLayerSize(uint16 layerID, Vector2 *size, bool32 usePixelUnits)
+void LoadActLayout();
+void LoadStageBackground();
+void LoadStageChunks();
+void LoadStageCollisions();
+void LoadStageGIFFile(int stageID);
+
+inline void Init3DFloorBuffer(int layerID)
 {
-    if (layerID < LAYER_COUNT && size) {
-        TileLayer *layer = &tileLayers[layerID];
-
-        if (usePixelUnits) {
-            size->x = TILE_SIZE * layer->xsize;
-            size->y = TILE_SIZE * layer->ysize;
-        }
-        else {
-            size->x = layer->xsize;
-            size->y = layer->ysize;
+    for (int y = 0; y < TILELAYER_CHUNK_H; ++y) {
+        for (int x = 0; x < TILELAYER_CHUNK_W; ++x) {
+            int c                           = stageLayouts[layerID].tiles[(x >> 3) + (y >> 3 << 8)] << 6;
+            int tx                          = x & 7;
+            tile3DFloorBuffer[x + (y << 8)] = c + tx + ((y & 7) << 3);
         }
     }
 }
 
-inline uint16 GetTile(uint16 layerID, int32 tileX, int32 tileY)
+inline void Copy16x16Tile(ushort dest, ushort src)
 {
-    if (layerID < LAYER_COUNT) {
-        TileLayer *layer = &tileLayers[layerID];
-        if (tileX >= 0 && tileX < layer->xsize && tileY >= 0 && tileY < layer->ysize)
-            return layer->layout[tileX + (tileY << layer->widthShift)];
-    }
-
-    return (uint16)-1;
+    byte *destPtr = &tilesetGFXData[TILELAYER_CHUNK_W * dest];
+    byte *srcPtr  = &tilesetGFXData[TILELAYER_CHUNK_W * src];
+    int cnt       = TILE_DATASIZE;
+    while (cnt--) *destPtr++ = *srcPtr++;
 }
 
-inline void SetTile(uint16 layerID, int32 tileX, int32 tileY, uint16 tile)
-{
-    if (layerID < LAYER_COUNT) {
-        TileLayer *layer = &tileLayers[layerID];
-        if (tileX >= 0 && tileX < layer->xsize && tileY >= 0 && tileY < layer->ysize)
-            layer->layout[tileX + (tileY << layer->widthShift)] = tile;
-    }
-}
+void SetLayerDeformation(int selectedDef, int waveLength, int waveWidth, int waveType, int YPos, int waveSize);
 
-inline int32 GetTileAngle(uint16 tile, uint8 cPlane, uint8 cMode)
-{
-    switch (cMode) {
-        default: return 0;
-        case CMODE_FLOOR: return tileInfo[cPlane & 1][tile & 0xFFF].floorAngle;
-        case CMODE_LWALL: return tileInfo[cPlane & 1][tile & 0xFFF].lWallAngle;
-        case CMODE_ROOF: return tileInfo[cPlane & 1][tile & 0xFFF].roofAngle;
-        case CMODE_RWALL: return tileInfo[cPlane & 1][tile & 0xFFF].rWallAngle;
-    }
-}
-inline void SetTileAngle(uint16 tile, uint8 cPlane, uint8 cMode, uint8 angle)
-{
-    switch (cMode) {
-        default: break;
-        case CMODE_FLOOR: tileInfo[cPlane & 1][tile & 0x3FF].floorAngle = angle; break;
-        case CMODE_LWALL: tileInfo[cPlane & 1][tile & 0x3FF].lWallAngle = angle; break;
-        case CMODE_ROOF: tileInfo[cPlane & 1][tile & 0x3FF].roofAngle = angle; break;
-        case CMODE_RWALL: tileInfo[cPlane & 1][tile & 0x3FF].rWallAngle = angle; break;
-    }
-}
+void SetPlayerScreenPosition(Entity *target);
+void SetPlayerScreenPositionCDStyle(Entity *target);
+void SetPlayerHLockedScreenPosition(Entity *target);
+void SetPlayerLockedScreenPosition(Entity *target);
+void SetPlayerScreenPositionFixed(Entity *target);
 
-inline uint8 GetTileFlags(uint16 tile, uint8 cPlane) { return tileInfo[cPlane & 1][tile & 0x3FF].flag; }
-inline void SetTileFlags(uint16 tile, uint8 cPlane, uint8 flag) { tileInfo[cPlane & 1][tile & 0x3FF].flag = flag; }
-
-void CopyTileLayer(uint16 dstLayerID, int32 dstStartX, int32 dstStartY, uint16 srcLayerID, int32 srcStartX, int32 srcStartY, int32 countX,
-                   int32 countY);
-
-inline void CopyTile(uint16 dest, uint16 src, uint16 count)
-{
-    if (dest > TILE_COUNT)
-        dest = TILE_COUNT - 1;
-
-    if (src > TILE_COUNT)
-        src = TILE_COUNT - 1;
-
-    if (count > TILE_COUNT)
-        count = TILE_COUNT - 1;
-
-    uint8 *destPixels = &tilesetPixels[TILE_DATASIZE * dest];
-    uint8 *srcPixels  = &tilesetPixels[TILE_DATASIZE * src];
-
-    uint8 *destPixelsX = &tilesetPixels[(TILE_DATASIZE * dest) + ((TILE_COUNT * TILE_DATASIZE) * FLIP_X)];
-    uint8 *srcPixelsX  = &tilesetPixels[(TILE_DATASIZE * src) + ((TILE_COUNT * TILE_DATASIZE) * FLIP_X)];
-
-    uint8 *destPixelsY = &tilesetPixels[(TILE_DATASIZE * dest) + ((TILE_COUNT * TILE_DATASIZE) * FLIP_Y)];
-    uint8 *srcPixelsY  = &tilesetPixels[(TILE_DATASIZE * src) + ((TILE_COUNT * TILE_DATASIZE) * FLIP_Y)];
-
-    uint8 *destPixelsXY = &tilesetPixels[(TILE_DATASIZE * dest) + ((TILE_COUNT * TILE_DATASIZE) * FLIP_XY)];
-    uint8 *srcPixelsXY  = &tilesetPixels[(TILE_DATASIZE * src) + ((TILE_COUNT * TILE_DATASIZE) * FLIP_XY)];
-
-    for (int32 t = 0; t < count; ++t) {
-        for (int32 p = 0; p < TILE_DATASIZE; ++p) {
-            *destPixels++   = *srcPixels++;
-            *destPixelsX++  = *srcPixelsX++;
-            *destPixelsY++  = *srcPixelsY++;
-            *destPixelsXY++ = *srcPixelsXY++;
-        }
-    }
-}
-
-inline ScanlineInfo *GetScanlines() { return scanlines; }
-
-// Draw a layer with horizonal scrolling capabilities
-void DrawLayerHScroll(TileLayer *layer);
-// Draw a layer with vertical scrolling capabilities
-void DrawLayerVScroll(TileLayer *layer);
-// Draw a layer with rotozoom (via scanline callback) capabilities
-void DrawLayerRotozoom(TileLayer *layer);
-// Draw a "basic" layer, no special capabilities, but it's the fastest to draw
-void DrawLayerBasic(TileLayer *layer);
-
-#if RETRO_REV0U
-#include "Legacy/SceneLegacy.hpp"
-#endif
-
-} // namespace RSDK
-
-#endif
+#endif // !SCENE_H
