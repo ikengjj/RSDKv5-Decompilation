@@ -1,170 +1,133 @@
-#include "RSDK/Core/RetroEngine.hpp"
+#include "RetroEngine.hpp"
+#include <string>
 
-using namespace RSDK;
+RSDKContainer rsdkContainer;
 
-RSDKFileInfo RSDK::dataFileList[DATAFILE_COUNT];
-RSDKContainer RSDK::dataPacks[DATAPACK_COUNT];
+char fileName[0x100];
+byte fileBuffer[0x2000];
+int fileSize          = 0;
+int vFileSize         = 0;
+int readPos           = 0;
+int readSize          = 0;
+int bufferPosition    = 0;
+int virtualFileOffset = 0;
+bool useEncryption    = false;
+byte packID           = 0;
+byte eStringPosA;
+byte eStringPosB;
+byte eStringNo;
+byte eNybbleSwap;
+byte encryptionStringA[0x10];
+byte encryptionStringB[0x10];
 
-uint8 RSDK::dataPackCount      = 0;
-uint16 RSDK::dataFileListCount = 0;
+FileIO *cFileHandle = nullptr;
 
-char RSDK::gameLogicName[0x200];
-
-bool32 RSDK::useDataPack = false;
-
-#if RETRO_REV0U
-void RSDK::DetectEngineVersion()
+bool CheckRSDKFile(const char *filePath)
 {
-    bool32 readDataPack = useDataPack;
-#if RETRO_USE_MOD_LOADER
-    // mods can manually set their target engine versions if needed
-    if (modSettings.versionOverride) {
-        engine.version = modSettings.versionOverride;
-        return;
-    }
-
-    // check if we have any mods with gameconfigs
-    int32 m = 0;
-    for (m = 0; m < modList.size(); ++m) {
-        if (!modList[m].active)
-            break;
-        SetActiveMod(m);
-
-        FileInfo checkInfo;
-        InitFileInfo(&checkInfo);
-        if (LoadFile(&checkInfo, "Data/Game/GameConfig.bin", FMODE_RB)) {
-            readDataPack = false;
-            CloseFile(&checkInfo);
-            m = 0; // found one, just sets this to 0 again
-            break;
-        }
-    }
-
-    if (m) // didn't find a gameconfig
-        SetActiveMod(-1);
-#endif
-
-    FileInfo info;
-    InitFileInfo(&info);
-    if (!readDataPack) {
-        if (LoadFile(&info, "Data/Game/GameConfig.bin", FMODE_RB)) {
-#if RETRO_USE_MOD_LOADER
-            SetActiveMod(-1);
-#endif
-            uint32 sig = ReadInt32(&info, false);
-
-            // GameConfig has "CFG" signature, its RSDKv5 formatted
-            if (sig == RSDK_SIGNATURE_CFG) {
-                engine.version = 5;
-            }
-            else {
-                // else, assume its RSDKv4 for now
-                engine.version = 4;
-
-                // Go back to the start of the file to check v3's "Data" string, that way we can tell if its v3 or v4
-                Seek_Set(&info, 0);
-
-                uint8 length = ReadInt8(&info);
-                char buffer[0x40];
-                ReadBytes(&info, buffer, length);
-
-                // the "Data" thing is actually a string, but lets treat it as a "signature" for simplicity's sake shall we?
-                length     = ReadInt8(&info);
-                uint32 sig = ReadInt32(&info, false);
-                if (sig == RSDK_SIGNATURE_DATA && length == 4)
-                    engine.version = 3;
-            }
-
-            CloseFile(&info);
-        }
-    }
-    else {
-        info.externalFile = true;
-        if (LoadFile(&info, dataPacks[dataPackCount - 1].name, FMODE_RB)) {
-            uint32 sig = ReadInt32(&info, false);
-            if (sig == RSDK_SIGNATURE_RSDK) {
-                ReadInt8(&info); // 'v'
-                uint8 version = ReadInt8(&info);
-
-                switch (version) {
-                    default: break;
-                    case '3': engine.version = 3; break;
-                    case '4': engine.version = 4; break;
-                    case '5': engine.version = 5; break;
-                }
-            }
-            else {
-                // v3 has no 'RSDK' signature
-                engine.version = 3;
-            }
-
-            CloseFile(&info);
-        }
-    }
-}
-#endif
-
-bool32 RSDK::LoadDataPack(const char *filePath, size_t fileOffset, bool32 useBuffer)
-{
-    MEM_ZERO(dataPacks[dataPackCount]);
-    useDataPack = false;
     FileInfo info;
 
-    char dataPackPath[0x100];
-    sprintf_s(dataPackPath, sizeof(dataPackPath), "%s%s", SKU::userFileDir, filePath);
+    char filePathBuffer[0x100];
+#if RETRO_PLATFORM == RETRO_OSX
+    char pathBuf[0x100];
+    sprintf(pathBuf, "%s/%s", gamePath, filePath);
+    sprintf(filePathBuffer, "%s", pathBuf);
+#else
+    sprintf(filePathBuffer, "%s", filePath);
+#endif
 
-    InitFileInfo(&info);
-    info.externalFile = true;
-    if (LoadFile(&info, dataPackPath, FMODE_RB)) {
-        uint32 sig = ReadInt32(&info, false);
-        if (sig != RSDK_SIGNATURE_RSDK)
-            return false;
+    cFileHandle = fOpen(filePathBuffer, "rb");
+    if (cFileHandle) {
+        byte signature[6] = { 'R', 'S', 'D', 'K', 'v', 'B' };
+        byte buf          = 0;
+        for (int i = 0; i < 6; ++i) {
+            fRead(&buf, 1, 1, cFileHandle);
+            if (buf != signature[i])
+                return false;
+        }
 
-        useDataPack = true;
+        Engine.usingDataFile = true;
+#if !RETRO_USE_ORIGINAL_CODE
+        Engine.usingDataFile_Config = true;
+#endif
 
-        ReadInt8(&info); // 'v'
-        ReadInt8(&info); // version
+        StrCopy(rsdkContainer.packNames[rsdkContainer.packCount], filePathBuffer);
 
-        strcpy(dataPacks[dataPackCount].name, dataPackPath);
-
-        dataPacks[dataPackCount].fileCount = ReadInt16(&info);
-        for (int32 f = 0; f < dataPacks[dataPackCount].fileCount; ++f) {
-            uint8 b[4];
-            for (int32 y = 0; y < 4; y++) {
-                ReadBytes(&info, b, 4);
-                dataFileList[f].hash[y] = (b[0] << 24) | (b[1] << 16) | (b[2] << 8) | (b[3] << 0);
+        byte b[4];
+        fRead(&b, 2, 1, cFileHandle);
+        ushort fileCount = (b[1] << 8) | (b[0] << 0);
+        for (int f = 0; f < fileCount; ++f) {
+            for (int y = 0; y < 4; ++y) {
+                fRead(b, 1, 4, cFileHandle);
+                rsdkContainer.files[f].hash[y] = (b[0] << 24) | (b[1] << 16) | (b[2] << 8) | (b[3] << 0);
             }
 
-            dataFileList[f].offset = ReadInt32(&info, false);
-            dataFileList[f].size   = ReadInt32(&info, false);
+            fRead(b, 4, 1, cFileHandle);
+            rsdkContainer.files[f].offset = (b[3] << 24) | (b[2] << 16) | (b[1] << 8) | (b[0] << 0);
+            fRead(b, 4, 1, cFileHandle);
+            rsdkContainer.files[f].filesize = (b[3] << 24) | (b[2] << 16) | (b[1] << 8) | (b[0] << 0);
 
-            dataFileList[f].encrypted = (dataFileList[f].size & 0x80000000) != 0;
-            dataFileList[f].size &= 0x7FFFFFFF;
-            dataFileList[f].useFileBuffer = useBuffer;
-            dataFileList[f].packID        = dataPackCount;
+            rsdkContainer.files[f].encrypted = (rsdkContainer.files[f].filesize & 0x80000000);
+            rsdkContainer.files[f].filesize &= 0x7FFFFFFF;
+
+            rsdkContainer.files[f].packID = rsdkContainer.packCount;
+
+            rsdkContainer.fileCount++;
         }
 
-        dataPacks[dataPackCount].fileBuffer = NULL;
-        if (useBuffer) {
-            dataPacks[dataPackCount].fileBuffer = (uint8 *)malloc(info.fileSize);
-            Seek_Set(&info, 0);
-            ReadBytes(&info, dataPacks[dataPackCount].fileBuffer, info.fileSize);
+        fClose(cFileHandle);
+        cFileHandle = NULL;
+        if (LoadFile("Bytecode/GlobalCode.bin", &info)) {
+            Engine.usingBytecode = true;
+            CloseFile();
         }
+        PrintLog("loaded datapack '%s'", filePathBuffer);
 
-        dataFileListCount += dataPacks[dataPackCount].fileCount;
-        dataPackCount++;
-
-        CloseFile(&info);
-
+        rsdkContainer.packCount++;
         return true;
     }
     else {
-        useDataPack = false;
+        Engine.usingDataFile = false;
+#if !RETRO_USE_ORIGINAL_CODE
+        Engine.usingDataFile_Config = false;
+#endif
+        cFileHandle = NULL;
+
+        if (LoadFile("Bytecode/GlobalCode.bin", &info)) {
+            Engine.usingBytecode = true;
+            CloseFile();
+        }
+        PrintLog("Couldn't load datapack '%s'", filePathBuffer);
         return false;
     }
 }
 
-#if !RETRO_USE_ORIGINAL_CODE && RETRO_REV0U
+#if !RETRO_USE_ORIGINAL_CODE
+int CheckFileInfo(const char *filepath)
+{
+    char pathBuf[0x100];
+    StrCopy(pathBuf, filepath);
+    uint hash[4];
+    int len = StrLength(pathBuf);
+    GenerateMD5FromString(pathBuf, len, &hash[0], &hash[1], &hash[2], &hash[3]);
+
+    for (int f = 0; f < rsdkContainer.fileCount; ++f) {
+        RSDKFileInfo *file = &rsdkContainer.files[f];
+
+        bool match = true;
+        for (int h = 0; h < 4; ++h) {
+            if (hash[h] != file->hash[h]) {
+                match = false;
+                break;
+            }
+        }
+        if (!match)
+            continue;
+
+        return f;
+    }
+    return -1;
+}
+
 inline bool ends_with(std::string const &value, std::string const &ending)
 {
     if (ending.size() > value.size())
@@ -173,292 +136,539 @@ inline bool ends_with(std::string const &value, std::string const &ending)
 }
 #endif
 
-bool32 RSDK::OpenDataFile(FileInfo *info, const char *filename)
+bool LoadFile(const char *filePath, FileInfo *fileInfo)
 {
-    char hashBuffer[0x400];
-    StringLowerCase(hashBuffer, filename);
-    RETRO_HASH_MD5(hash);
-    GEN_HASH_MD5_BUFFER(hashBuffer, hash);
+    MEM_ZEROP(fileInfo);
 
-    for (int32 f = 0; f < dataFileListCount; ++f) {
-        RSDKFileInfo *file = &dataFileList[f];
+    if (cFileHandle)
+        fClose(cFileHandle);
 
-        if (!HASH_MATCH_MD5(hash, file->hash))
-            continue;
-
-        info->usingFileBuffer = file->useFileBuffer;
-        if (!file->useFileBuffer) {
-            info->file = fOpen(dataPacks[file->packID].name, "rb");
-            if (!info->file) {
-                PrintLog(PRINT_NORMAL, "File not found (Unable to open datapack): %s", filename);
-                return false;
-            }
-
-            fSeek(info->file, file->offset, SEEK_SET);
-        }
-        else {
-            // a bit of a hack, but it is how it is in the original
-            info->file = (FileIO *)&dataPacks[file->packID].fileBuffer[file->offset];
-
-            uint8 *fileBuffer = (uint8 *)info->file;
-            info->fileBuffer  = fileBuffer;
-        }
-
-        info->fileSize   = file->size;
-        info->readPos    = 0;
-        info->fileOffset = file->offset;
-        info->encrypted  = file->encrypted;
-        memset(info->encryptionKeyA, 0, 0x10 * sizeof(uint8));
-        memset(info->encryptionKeyB, 0, 0x10 * sizeof(uint8));
-        if (info->encrypted) {
-            GenerateELoadKeys(info, filename, info->fileSize);
-            info->eKeyNo      = (info->fileSize / 4) & 0x7F;
-            info->eKeyPosA    = 0;
-            info->eKeyPosB    = 8;
-            info->eNybbleSwap = false;
-        }
-
-#if !RETRO_USE_ORIGINAL_CODE
-        PrintLog(PRINT_NORMAL, "Loaded data file %s", filename);
-#endif
-        return true;
+    char filePathBuf[0x100];
+    StrCopy(filePathBuf, filePath);
+    bool forceFolder = false;
+#if RETRO_USE_MOD_LOADER
+    // Fixes ".ani" ".Ani" bug and any other case differences
+    char pathLower[0x100];
+    memset(pathLower, 0, sizeof(char) * 0x100);
+    for (int c = 0; c < strlen(filePathBuf); ++c) {
+        pathLower[c] = tolower(filePathBuf[c]);
     }
 
-#if !RETRO_USE_ORIGINAL_CODE
-    PrintLog(PRINT_NORMAL, "Data file not found: %s", filename);
-#else
-    PrintLog(PRINT_NORMAL, "File not found: %s", filename);
-#endif
-    return false;
-}
-
-bool32 RSDK::LoadFile(FileInfo *info, const char *filename, uint8 fileMode)
-{
-    if (info->file)
-        return false;
-
-    char fullFilePath[0x100];
-    strcpy(fullFilePath, filename);
-
-#if RETRO_USE_MOD_LOADER
-    char pathLower[0x100];
-    memset(pathLower, 0, sizeof(pathLower));
-    for (int32 c = 0; c < strlen(filename); ++c) pathLower[c] = tolower(filename[c]);
-
-    bool32 addPath = false;
-    int32 m        = modSettings.activeMod != -1 ? modSettings.activeMod : 0;
+    bool addPath = true;
+    int m = activeMod != -1 ? activeMod : 0; 
     for (; m < modList.size(); ++m) {
         if (modList[m].active) {
             std::map<std::string, std::string>::const_iterator iter = modList[m].fileMap.find(pathLower);
             if (iter != modList[m].fileMap.cend()) {
-                if (std::find(modList[m].excludedFiles.begin(), modList[m].excludedFiles.end(), pathLower) == modList[m].excludedFiles.end()) {
-                    strcpy(fullFilePath, iter->second.c_str());
-                    info->externalFile = true;
-                    break;
-                }
-                else {
-                    PrintLog(PRINT_NORMAL, "[MOD] Excluded File: %s", filename);
-                }
+                StrCopy(filePathBuf, iter->second.c_str());
+                forceFolder = true;
+                addPath     = false;
+                break;
             }
         }
-        if (modSettings.activeMod != -1) {
-            PrintLog(PRINT_NORMAL, "[MOD] Failed to find file %s in active mod %s", filename, modList[m].id.c_str());
-            // TODO return false? check original impl later
-        }
+        if (activeMod != -1)
+            break;
     }
 
-#if RETRO_REV0U
-    if (modSettings.forceScripts && !info->externalFile) {
-        if (std::string(fullFilePath).rfind("Data/Scripts/", 0) == 0 && ends_with(std::string(fullFilePath), "txt")) {
+    if (forceUseScripts && !forceFolder) {
+        if (std::string(filePathBuf).rfind("Data/Scripts/", 0) == 0 && ends_with(std::string(filePathBuf), "txt")) {
             // is a script, since those dont exist normally, load them from "scripts/"
-            info->externalFile = true;
-            addPath            = true;
-            std::string fStr   = std::string(fullFilePath);
+            forceFolder   = true;
+            Engine.usingDataFile = false;
+            addPath              = true;
+            std::string fStr     = std::string(filePathBuf);
             fStr.erase(fStr.begin(), fStr.begin() + 5); // remove "Data/"
-            StrCopy(fullFilePath, fStr.c_str());
+            StrCopy(filePathBuf, fStr.c_str());
         }
     }
 #endif
 
 #if RETRO_PLATFORM == RETRO_OSX || RETRO_PLATFORM == RETRO_ANDROID
+#if RETRO_USE_MOD_LOADER
     if (addPath) {
-        char pathBuf[0x100];
-        sprintf_s(pathBuf, sizeof(pathBuf), "%s%s", SKU::userFileDir, fullFilePath);
-        sprintf_s(fullFilePath, sizeof(fullFilePath), "%s", pathBuf);
-    }
 #else
-    (void)addPath;
-#endif // ! RETRO_PLATFORM
-#endif // ! RETRO_MOD_LOADER
-
-#if !RETRO_USE_ORIGNAL_CODE
-    // somewhat hacky that also pleases the mod gods
-    if (!info->externalFile) {
+    if (true) {
+#endif
         char pathBuf[0x100];
-        sprintf_s(pathBuf, sizeof(pathBuf), "%s%s", SKU::userFileDir, fullFilePath);
-        sprintf_s(fullFilePath, sizeof(fullFilePath), "%s", pathBuf);
+        sprintf(pathBuf, "%s/%s", gamePath, filePathBuf);
+        sprintf(filePathBuf, "%s", pathBuf);
     }
 #endif
 
-    if (!info->externalFile && fileMode == FMODE_RB && useDataPack) {
-        return OpenDataFile(info, filename);
-    }
-
-    if (fileMode == FMODE_RB || fileMode == FMODE_WB || fileMode == FMODE_RB_PLUS) {
-        info->file = fOpen(fullFilePath, openModes[fileMode - 1]);
-    }
-
-    if (!info->file) {
+    cFileHandle = NULL;
 #if !RETRO_USE_ORIGINAL_CODE
-        PrintLog(PRINT_NORMAL, "File not found: %s", fullFilePath);
+    StringLowerCase(fileInfo->fileName, filePath);
+    StrCopy(fileName, fileInfo->fileName);
+
+    int fileIndex = CheckFileInfo(fileName);
+    if (fileIndex != -1 && !forceFolder) {
+        RSDKFileInfo *file = &rsdkContainer.files[fileIndex];
+        packID      = file->packID;
+        cFileHandle = fOpen(rsdkContainer.packNames[file->packID], "rb");
+        if (cFileHandle) {
+            fSeek(cFileHandle, 0, SEEK_END);
+            fileSize = (int)fTell(cFileHandle);
+
+            vFileSize         = file->filesize;
+            virtualFileOffset = file->offset;
+            readPos           = file->offset;
+            readSize          = 0;
+            bufferPosition    = 0;
+            fSeek(cFileHandle, virtualFileOffset, SEEK_SET);
+
+            useEncryption = file->encrypted;
+            memset(fileInfo->encryptionStringA, 0, 0x10 * sizeof(byte));
+            memset(fileInfo->encryptionStringB, 0, 0x10 * sizeof(byte));
+            if (useEncryption) {
+                GenerateELoadKeys(vFileSize, (vFileSize >> 1) + 1);
+                eStringNo   = (vFileSize & 0x1FC) >> 2;
+                eStringPosA = 0;
+                eStringPosB = 8;
+                eNybbleSwap = 0;
+                memcpy(fileInfo->encryptionStringA, encryptionStringA, 0x10 * sizeof(byte));
+                memcpy(fileInfo->encryptionStringB, encryptionStringB, 0x10 * sizeof(byte));
+            }
+
+            fileInfo->readPos           = readPos;
+            fileInfo->fileSize          = fileSize;
+            fileInfo->vfileSize         = vFileSize;
+            fileInfo->virtualFileOffset = virtualFileOffset;
+            fileInfo->eStringNo         = eStringNo;
+            fileInfo->eStringPosB       = eStringPosB;
+            fileInfo->eStringPosA       = eStringPosA;
+            fileInfo->eNybbleSwap       = eNybbleSwap;
+            fileInfo->bufferPosition    = bufferPosition;
+            fileInfo->useEncryption     = useEncryption;
+            fileInfo->packID            = packID;
+            fileInfo->usingDataPack     = true;
+            PrintLog("Loaded Data File '%s'", filePath);
+
+            Engine.usingDataFile = true;
+
+            return true;
+        }
+#else
+    if (Engine.usingDataFile) {
+        StringLowerCase(fileInfo->fileName, filePath);
+        StrCopy(fileName, fileInfo->fileName);
+        uint hash[4];
+        int len = StrLength(fileInfo->fileName);
+        GenerateMD5FromString(fileInfo->fileName, len, &hash[0], &hash[1], &hash[2], &hash[3]);
+
+        for (int f = 0; f < rsdkContainer.fileCount; ++f) {
+            RSDKFileInfo *file = &rsdkContainer.files[f];
+
+            bool match = true;
+            for (int h = 0; h < 4; ++h) {
+                if (hash[h] != file->hash[h]) {
+                    match = false;
+                    break;
+                }
+            }
+            if (!match)
+                continue;
+
+            packID      = file->packID;
+            cFileHandle = fOpen(rsdkContainer.packNames[file->packID], "rb");
+            if (cFileHandle) {
+                fSeek(cFileHandle, 0, SEEK_END);
+                fileSize = (int)fTell(cFileHandle);
+
+                vFileSize         = file->filesize;
+                virtualFileOffset = file->offset;
+                readPos           = file->offset;
+                readSize          = 0;
+                bufferPosition    = 0;
+                fSeek(cFileHandle, virtualFileOffset, SEEK_SET);
+
+                useEncryption = file->encrypted;
+                memset(fileInfo->encryptionStringA, 0, 0x10 * sizeof(byte));
+                memset(fileInfo->encryptionStringB, 0, 0x10 * sizeof(byte));
+                if (useEncryption) {
+                    GenerateELoadKeys(vFileSize, (vFileSize >> 1) + 1);
+                    eStringNo   = (vFileSize & 0x1FC) >> 2;
+                    eStringPosA = 0;
+                    eStringPosB = 8;
+                    eNybbleSwap = 0;
+                    memcpy(fileInfo->encryptionStringA, encryptionStringA, 0x10 * sizeof(byte));
+                    memcpy(fileInfo->encryptionStringB, encryptionStringB, 0x10 * sizeof(byte));
+                }
+
+                fileInfo->readPos           = readPos;
+                fileInfo->fileSize          = fileSize;
+                fileInfo->vfileSize         = vFileSize;
+                fileInfo->virtualFileOffset = virtualFileOffset;
+                fileInfo->eStringNo         = eStringNo;
+                fileInfo->eStringPosB       = eStringPosB;
+                fileInfo->eStringPosA       = eStringPosA;
+                fileInfo->eNybbleSwap       = eNybbleSwap;
+                fileInfo->bufferPosition    = bufferPosition;
+                fileInfo->useEncryption     = useEncryption;
+                fileInfo->packID            = packID;
+                fileInfo->usingDataPack     = true;
+                PrintLog("Loaded Data File '%s'", filePath);
+
+                return true;
+            }
+            else {
+                break;
+            }
+        }
 #endif
+        PrintLog("Couldn't load file '%s'", filePath);
         return false;
     }
+    else {
+        StrCopy(fileInfo->fileName, filePathBuf);
+        StrCopy(fileName, fileInfo->fileName);
 
-    info->readPos  = 0;
-    info->fileSize = 0;
+        cFileHandle = fOpen(fileInfo->fileName, "rb");
+        if (!cFileHandle) {
+            PrintLog("Couldn't load file '%s'", filePath);
+            return false;
+        }
+        virtualFileOffset = 0;
+        fSeek(cFileHandle, 0, SEEK_END);
+        fileInfo->fileSize = (int)fTell(cFileHandle);
+        fileSize = fileInfo->vfileSize = fileInfo->fileSize;
+        fSeek(cFileHandle, 0, SEEK_SET);
+        readPos           = 0;
+        fileInfo->readPos = readPos;
+        packID = fileInfo->packID = -1;
+        fileInfo->usingDataPack   = false;
+        bufferPosition            = 0;
+        readSize                  = 0;
+        useEncryption             = false;
 
-    if (fileMode != FMODE_WB) {
-        fSeek(info->file, 0, SEEK_END);
-        info->fileSize = (int32)fTell(info->file);
-        fSeek(info->file, 0, SEEK_SET);
-    }
 #if !RETRO_USE_ORIGINAL_CODE
-    PrintLog(PRINT_NORMAL, "Loaded file %s", fullFilePath);
+        Engine.usingDataFile = false;
 #endif
-    return true;
+
+        PrintLog("Loaded File '%s'", filePath);
+        return true;
+    }
 }
 
-void RSDK::GenerateELoadKeys(FileInfo *info, const char *key1, int32 key2)
+void GenerateELoadKeys(uint key1, uint key2)
 {
-    // This function splits hashes into bytes by casting their integers to byte arrays,
-    // which only works as intended on little-endian CPUs.
+    char buffer[0x20];
+    uint hash[0x4];
+
+    // StringA
+    ConvertIntegerToString(buffer, key1);
+    int len = StrLength(buffer);
+    GenerateMD5FromString(buffer, len, &hash[0], &hash[1], &hash[2], &hash[3]);
+
 #if !RETRO_USE_ORIGINAL_CODE
-    RETRO_HASH_MD5(hash);
+    for (int i = 0; i < 4; ++i)
+        for (int j = 0; j < 4; ++j) encryptionStringA[i * 4 + j] = (hash[i] >> (8 * (j ^ 3))) & 0xFF;
 #else
-    uint8 hash[0x10];
-#endif
-    char hashBuffer[0x400];
-
-    // KeyA
-    StringUpperCase(hashBuffer, key1);
-#if !RETRO_USE_ORIGINAL_CODE
-    GEN_HASH_MD5_BUFFER(hashBuffer, hash);
-
-    for (int32 i = 0; i < 4; ++i)
-        for (int32 j = 0; j < 4; ++j) info->encryptionKeyA[i * 4 + j] = (hash[i] >> (8 * (j ^ 3))) & 0xFF;
-#else
-    GEN_HASH_MD5_BUFFER(hashBuffer, (uint32 *)hash);
-
-    for (int32 y = 0; y < 0x10; y += 4) {
-        info->encryptionKeyA[y + 3] = hash[y + 0];
-        info->encryptionKeyA[y + 2] = hash[y + 1];
-        info->encryptionKeyA[y + 1] = hash[y + 2];
-        info->encryptionKeyA[y + 0] = hash[y + 3];
+    for (int y = 0; y < 0x10; y += 4) {
+        encryptionStringA[y + 3] = hash[y + 0];
+        encryptionStringA[y + 2] = hash[y + 1];
+        encryptionStringA[y + 1] = hash[y + 2];
+        encryptionStringA[y + 0] = hash[y + 3];
     }
 #endif
 
-    // KeyB
-    sprintf_s(hashBuffer, sizeof(hashBuffer), "%d", key2);
+    // StringB
+    ConvertIntegerToString(buffer, key2);
+    len = StrLength(buffer);
+    GenerateMD5FromString(buffer, len, &hash[0], &hash[1], &hash[2], &hash[3]);
+
 #if !RETRO_USE_ORIGINAL_CODE
-    GEN_HASH_MD5_BUFFER(hashBuffer, hash);
-
-    for (int32 i = 0; i < 4; ++i)
-        for (int32 j = 0; j < 4; ++j) info->encryptionKeyB[i * 4 + j] = (hash[i] >> (8 * (j ^ 3))) & 0xFF;
+    for (int i = 0; i < 4; ++i)
+        for (int j = 0; j < 4; ++j) encryptionStringB[i * 4 + j] = (hash[i] >> (8 * (j ^ 3))) & 0xFF;
 #else
-    GEN_HASH_MD5_BUFFER(hashBuffer, (uint32 *)hash);
-
-    for (int32 y = 0; y < 0x10; y += 4) {
-        info->encryptionKeyB[y + 3] = hash[y + 0];
-        info->encryptionKeyB[y + 2] = hash[y + 1];
-        info->encryptionKeyB[y + 1] = hash[y + 2];
-        info->encryptionKeyB[y + 0] = hash[y + 3];
+    for (int y = 0; y < 0x10; y += 4) {
+        encryptionStringB[y + 3] = hash[y + 0];
+        encryptionStringB[y + 2] = hash[y + 1];
+        encryptionStringB[y + 1] = hash[y + 2];
+        encryptionStringB[y + 0] = hash[y + 3];
     }
 #endif
 }
 
-void RSDK::DecryptBytes(FileInfo *info, void *buffer, size_t size)
+const uint ENC_KEY_2 = 0x24924925;
+const uint ENC_KEY_1 = 0xAAAAAAAB;
+int mulUnsignedHigh(uint arg1, int arg2) { return (int)(((unsigned long long)arg1 * (unsigned long long)arg2) >> 32); }
+
+void FileRead(void *dest, int size)
 {
-    if (size) {
-        uint8 *data = (uint8 *)buffer;
-        while (size > 0) {
-            *data ^= info->eKeyNo ^ info->encryptionKeyB[info->eKeyPosB];
-            if (info->eNybbleSwap)
-                *data = ((*data << 4) + (*data >> 4)) & 0xFF;
-            *data ^= info->encryptionKeyA[info->eKeyPosA];
+    byte *data = (byte *)dest;
+    memset(data, 0, size);
 
-            info->eKeyPosA++;
-            info->eKeyPosB++;
+    if (readPos <= fileSize) {
+        if (useEncryption) {
+            while (size > 0) {
+                if (bufferPosition == readSize)
+                    FillFileBuffer();
 
-            if (info->eKeyPosA <= 15) {
-                if (info->eKeyPosB > 12) {
-                    info->eKeyPosB = 0;
-                    info->eNybbleSwap ^= 1;
+                *data = encryptionStringB[eStringPosB] ^ eStringNo ^ fileBuffer[bufferPosition++];
+                if (eNybbleSwap)
+                    *data = ((*data << 4) + (*data >> 4)) & 0xFF;
+                *data ^= encryptionStringA[eStringPosA];
+
+                ++eStringPosA;
+                ++eStringPosB;
+                if (eStringPosA <= 0x0F) {
+                    if (eStringPosB > 0x0C) {
+                        eStringPosB = 0;
+                        eNybbleSwap ^= 0x01;
+                    }
                 }
-            }
-            else if (info->eKeyPosB <= 8) {
-                info->eKeyPosA = 0;
-                info->eNybbleSwap ^= 1;
-            }
-            else {
-                info->eKeyNo += 2;
-                info->eKeyNo &= 0x7F;
-
-                if (info->eNybbleSwap) {
-                    info->eNybbleSwap = false;
-
-                    info->eKeyPosA = info->eKeyNo % 7;
-                    info->eKeyPosB = (info->eKeyNo % 12) + 2;
+                else if (eStringPosB <= 0x08) {
+                    eStringPosA = 0;
+                    eNybbleSwap ^= 0x01;
                 }
                 else {
-                    info->eNybbleSwap = true;
+                    eStringNo += 2;
+                    eStringNo &= 0x7F;
 
-                    info->eKeyPosA = (info->eKeyNo % 12) + 3;
-                    info->eKeyPosB = info->eKeyNo % 7;
+                    if (eNybbleSwap != 0) {
+                        int key1    = mulUnsignedHigh(ENC_KEY_1, eStringNo);
+                        int key2    = mulUnsignedHigh(ENC_KEY_2, eStringNo);
+                        eNybbleSwap = 0;
+
+                        int temp1 = key2 + (eStringNo - key2) / 2;
+                        int temp2 = key1 / 8 * 3;
+
+                        eStringPosA = eStringNo - temp1 / 4 * 7;
+                        eStringPosB = eStringNo - temp2 * 4 + 2;
+                    }
+                    else {
+                        int key1    = mulUnsignedHigh(ENC_KEY_1, eStringNo);
+                        int key2    = mulUnsignedHigh(ENC_KEY_2, eStringNo);
+                        eNybbleSwap = 1;
+
+                        int temp1 = key2 + (eStringNo - key2) / 2;
+                        int temp2 = key1 / 8 * 3;
+
+                        eStringPosB = eStringNo - temp1 / 4 * 7;
+                        eStringPosA = eStringNo - temp2 * 4 + 3;
+                    }
                 }
-            }
 
-            ++data;
-            --size;
+                ++data;
+                --size;
+            }
+        }
+        else {
+            while (size > 0) {
+                if (bufferPosition == readSize)
+                    FillFileBuffer();
+
+                *data++ = fileBuffer[bufferPosition++];
+                size--;
+            }
         }
     }
 }
-void RSDK::SkipBytes(FileInfo *info, int32 size)
+
+void FileSkip(int count)
 {
-    if (size) {
-        while (size > 0) {
-            info->eKeyPosA++;
-            info->eKeyPosB++;
+    if (readPos <= fileSize) {
+        if (useEncryption) {
+            while (count > 0) {
+                if (bufferPosition == readSize)
+                    FillFileBuffer();
+                bufferPosition++;
 
-            if (info->eKeyPosA <= 15) {
-                if (info->eKeyPosB > 12) {
-                    info->eKeyPosB = 0;
-                    info->eNybbleSwap ^= 1;
+                ++eStringPosA;
+                ++eStringPosB;
+                if (eStringPosA <= 0x0F) {
+                    if (eStringPosB > 0x0C) {
+                        eStringPosB = 0;
+                        eNybbleSwap ^= 0x01;
+                    }
                 }
-            }
-            else if (info->eKeyPosB <= 8) {
-                info->eKeyPosA = 0;
-                info->eNybbleSwap ^= 1;
-            }
-            else {
-                info->eKeyNo += 2;
-                info->eKeyNo &= 0x7F;
-
-                if (info->eNybbleSwap) {
-                    info->eNybbleSwap = false;
-
-                    info->eKeyPosA = info->eKeyNo % 7;
-                    info->eKeyPosB = (info->eKeyNo % 12) + 2;
+                else if (eStringPosB <= 0x08) {
+                    eStringPosA = 0;
+                    eNybbleSwap ^= 0x01;
                 }
                 else {
-                    info->eNybbleSwap = true;
+                    eStringNo += 2;
+                    eStringNo &= 0x7F;
 
-                    info->eKeyPosA = (info->eKeyNo % 12) + 3;
-                    info->eKeyPosB = info->eKeyNo % 7;
+                    if (eNybbleSwap != 0) {
+                        int key1    = mulUnsignedHigh(ENC_KEY_1, eStringNo);
+                        int key2    = mulUnsignedHigh(ENC_KEY_2, eStringNo);
+                        eNybbleSwap = 0;
+
+                        int temp1 = key2 + (eStringNo - key2) / 2;
+                        int temp2 = key1 / 8 * 3;
+
+                        eStringPosA = eStringNo - temp1 / 4 * 7;
+                        eStringPosB = eStringNo - temp2 * 4 + 2;
+                    }
+                    else {
+                        int key1    = mulUnsignedHigh(ENC_KEY_1, eStringNo);
+                        int key2    = mulUnsignedHigh(ENC_KEY_2, eStringNo);
+                        eNybbleSwap = 1;
+
+                        int temp1 = key2 + (eStringNo - key2) / 2;
+                        int temp2 = key1 / 8 * 3;
+
+                        eStringPosB = eStringNo - temp1 / 4 * 7;
+                        eStringPosA = eStringNo - temp2 * 4 + 3;
+                    }
                 }
-            }
 
-            --size;
+                --count;
+            }
+        }
+        else {
+            while (count > 0) {
+                if (bufferPosition == readSize)
+                    FillFileBuffer();
+                bufferPosition++;
+                count--;
+            }
         }
     }
+}
+
+void GetFileInfo(FileInfo *fileInfo)
+{
+    StrCopy(fileInfo->fileName, fileName);
+    fileInfo->bufferPosition    = bufferPosition;
+    fileInfo->readPos           = readPos - readSize;
+    fileInfo->fileSize          = fileSize;
+    fileInfo->vfileSize         = vFileSize;
+    fileInfo->virtualFileOffset = virtualFileOffset;
+    fileInfo->eStringPosA       = eStringPosA;
+    fileInfo->eStringPosB       = eStringPosB;
+    fileInfo->eStringNo         = eStringNo;
+    fileInfo->eNybbleSwap       = eNybbleSwap;
+    fileInfo->useEncryption     = useEncryption;
+    fileInfo->packID            = packID;
+    fileInfo->usingDataPack     = Engine.usingDataFile;
+    memcpy(encryptionStringA, fileInfo->encryptionStringA, 0x10 * sizeof(byte));
+    memcpy(encryptionStringB, fileInfo->encryptionStringB, 0x10 * sizeof(byte));
+}
+
+void SetFileInfo(FileInfo *fileInfo)
+{
+#if !RETRO_USE_ORIGINAL_CODE
+    if (fileInfo->usingDataPack) {
+#else
+    if (Engine.usingDataFile) {
+#endif
+        cFileHandle = fOpen(rsdkContainer.packNames[fileInfo->packID], "rb");
+        if (cFileHandle) {
+            virtualFileOffset = fileInfo->virtualFileOffset;
+            vFileSize         = fileInfo->vfileSize;
+            fSeek(cFileHandle, 0, SEEK_END);
+            fileSize = (int)fTell(cFileHandle);
+            readPos  = fileInfo->readPos;
+            fSeek(cFileHandle, readPos, SEEK_SET);
+            FillFileBuffer();
+            bufferPosition       = fileInfo->bufferPosition;
+            eStringPosA          = fileInfo->eStringPosA;
+            eStringPosB          = fileInfo->eStringPosB;
+            eStringNo            = fileInfo->eStringNo;
+            eNybbleSwap          = fileInfo->eNybbleSwap;
+            useEncryption        = fileInfo->useEncryption;
+            packID               = fileInfo->packID;
+            Engine.usingDataFile = fileInfo->usingDataPack;
+
+            if (useEncryption) {
+                GenerateELoadKeys(vFileSize, (vFileSize >> 1) + 1);
+            }
+        }
+    }
+    else {
+        StrCopy(fileName, fileInfo->fileName);
+        cFileHandle       = fOpen(fileInfo->fileName, "rb");
+        virtualFileOffset = 0;
+        fileSize          = fileInfo->fileSize;
+        readPos           = fileInfo->readPos;
+        fSeek(cFileHandle, readPos, SEEK_SET);
+        FillFileBuffer();
+        bufferPosition       = fileInfo->bufferPosition;
+        eStringPosA          = 0;
+        eStringPosB          = 0;
+        eStringNo            = 0;
+        eNybbleSwap          = 0;
+        useEncryption        = fileInfo->useEncryption;
+        packID               = fileInfo->packID;
+        Engine.usingDataFile = fileInfo->usingDataPack;
+    }
+}
+
+size_t GetFilePosition()
+{
+    if (Engine.usingDataFile)
+        return bufferPosition + readPos - readSize - virtualFileOffset;
+    else
+        return bufferPosition + readPos - readSize;
+}
+
+void SetFilePosition(int newPos)
+{
+    if (useEncryption) {
+        readPos     = virtualFileOffset + newPos;
+        eStringNo   = (vFileSize & 0x1FC) >> 2;
+        eStringPosA = 0;
+        eStringPosB = 8;
+        eNybbleSwap = false;
+        while (newPos) {
+            ++eStringPosA;
+            ++eStringPosB;
+            if (eStringPosA <= 0x0F) {
+                if (eStringPosB > 0x0C) {
+                    eStringPosB = 0;
+                    eNybbleSwap ^= 0x01;
+                }
+            }
+            else if (eStringPosB <= 0x08) {
+                eStringPosA = 0;
+                eNybbleSwap ^= 0x01;
+            }
+            else {
+                eStringNo += 2;
+                eStringNo &= 0x7F;
+
+                if (eNybbleSwap != 0) {
+                    int key1    = mulUnsignedHigh(ENC_KEY_1, eStringNo);
+                    int key2    = mulUnsignedHigh(ENC_KEY_2, eStringNo);
+                    eNybbleSwap = 0;
+
+                    int temp1 = key2 + (eStringNo - key2) / 2;
+                    int temp2 = key1 / 8 * 3;
+
+                    eStringPosA = eStringNo - temp1 / 4 * 7;
+                    eStringPosB = eStringNo - temp2 * 4 + 2;
+                }
+                else {
+                    int key1    = mulUnsignedHigh(ENC_KEY_1, eStringNo);
+                    int key2    = mulUnsignedHigh(ENC_KEY_2, eStringNo);
+                    eNybbleSwap = 1;
+
+                    int temp1 = key2 + (eStringNo - key2) / 2;
+                    int temp2 = key1 / 8 * 3;
+
+                    eStringPosB = eStringNo - temp1 / 4 * 7;
+                    eStringPosA = eStringNo - temp2 * 4 + 3;
+                }
+            }
+            --newPos;
+        }
+    }
+    else {
+        if (Engine.usingDataFile)
+            readPos = virtualFileOffset + newPos;
+        else
+            readPos = newPos;
+    }
+    fSeek(cFileHandle, readPos, SEEK_SET);
+    FillFileBuffer();
+}
+
+bool ReachedEndOfFile()
+{
+    if (Engine.usingDataFile)
+        return bufferPosition + readPos - readSize - virtualFileOffset >= vFileSize;
+    else
+        return bufferPosition + readPos - readSize >= fileSize;
 }

@@ -1,1523 +1,1325 @@
-#include "RSDK/Core/RetroEngine.hpp"
+#include "RetroEngine.hpp"
 
-using namespace RSDK;
-
-#if RETRO_REV0U
-#include "Legacy/RetroEngineLegacy.cpp"
+#if !RETRO_USE_ORIGINAL_CODE
+bool usingCWD        = false;
+bool engineDebugMode = false;
 #endif
 
-LogicLinkHandle RSDK::linkGameLogic = NULL;
-
-Link::Handle gameLogicHandle = NULL;
-
 #if RETRO_PLATFORM == RETRO_ANDROID
-#include <jni.h>
 #include <unistd.h>
 #endif
 
-int32 *RSDK::globalVarsPtr = NULL;
-#if RETRO_REV0U
-void (*RSDK::globalVarsInitCB)(void *globals) = NULL;
-#endif
+RetroEngine Engine = RetroEngine();
 
-RetroEngine RSDK::engine = RetroEngine();
-
-int32 RSDK::RunRetroEngine(int32 argc, char *argv[])
+#if !RETRO_USE_ORIGINAL_CODE
+inline int GetLowerRate(int intendRate, int targetRate)
 {
-    ParseArguments(argc, argv);
+    int result   = 0;
+    int valStore = 0;
 
-    if (engine.consoleEnabled)
-        InitConsole();
-    RenderDevice::isRunning = false;
-
-    if (InitStorage()) {
-        SKU::InitUserCore();
-        LoadSettingsINI();
-
-#if !RETRO_USE_ORIGINAL_CODE
-        // temp fix till i properly figure out what exactly went wrong here
-#if RETRO_REV02
-        SKU::curSKU.platform = SKU::userCore->GetUserPlatform();
-#else
-        if (gameVerInfo.platform == PLATFORM_PC)
-            gameVerInfo.platform = engine.devMenu ? PLATFORM_DEV : PLATFORM_PC;
-#endif
-#endif
-
-#if RETRO_USE_MOD_LOADER
-        // do it early so we can render funny little loading bar for mods
-        int32 shader = videoSettings.shaderID;
-        strcpy(gameVerInfo.gameTitle, "RSDK" ENGINE_V_NAME);
-        if (RenderDevice::Init()) {
-            RenderDevice::isRunning   = true;
-            currentScreen             = &screens[0];
-            videoSettings.screenCount = 1;
-        }
-        else {
-            // No render device, throw a "QUIT" msg onto the message loop and call it a day :)
-            SendQuitMsg();
-        }
-#if RETRO_PLATFORM == RETRO_ANDROID
-        // wait until we have a window
-        while (!RenderDevice::window) {
-            RenderDevice::ProcessEvents();
-        }
-#endif
-
-#if RETRO_REV0U
-        engine.version = 0;
-        InitModAPI(true); // check for versions
-        engine.version = 5;
-#endif
-#endif
-
-#if RETRO_REV0U
-        DetectEngineVersion();
-#endif
-
-        // By Default we use the dummy system so this'll never be false
-        // its used in cases like steam where it gives the "Steam must be running to play this game" message and closes
-#if RETRO_REV02
-        if (!SKU::userCore->CheckAPIInitialized()) {
-#else
-        if (false) { // it's more hardcoded in rev01, so lets pretend it's here
-#endif
-            // popup a message box saying the API failed to validate or something
-            // on steam this is the "steam must be running to play this game" message
-            return 0;
-        }
-
-        InitEngine();
-#if RETRO_USE_MOD_LOADER
-        // we confirmed the game actually is valid & running, lets start some callbacks
-        videoSettings.shaderID = shader;
-        RenderDevice::InitShaders();
-        RenderDevice::SetWindowTitle();
-        RenderDevice::lastShaderID = -1;
-#else
-        if (RenderDevice::Init()) {
-            RenderDevice::isRunning = true;
-        }
-        else {
-            // No render device, throw a "QUIT" msg onto the message loop and call it a day :)
-            SendQuitMsg();
-        }
-#endif
+    result = targetRate;
+    if (intendRate) {
+        do {
+            valStore   = result % intendRate;
+            result     = intendRate;
+            intendRate = valStore;
+        } while (valStore);
     }
-
-    RenderDevice::InitFPSCap();
-
-    while (RenderDevice::isRunning) {
-        RenderDevice::ProcessEvents();
-
-        if (!RenderDevice::isRunning)
-            break;
-
-        if (RenderDevice::CheckFPSCap()) {
-            RenderDevice::UpdateFPSCap();
-
-            AudioDevice::FrameInit();
-
-#if RETRO_REV02
-            SKU::userCore->FrameInit();
-
-            if (SKU::userCore->CheckEnginePause())
-                continue;
-
-                // Focus Checks
-#if !RETRO_USE_ORIGINAL_CODE
-            if (customSettings.disableFocusPause)
-                engine.focusState = 0;
-            else if (SKU::userCore->CheckFocusLost()) {
-#else
-            if (SKU::userCore->CheckFocusLost()) {
+    return result;
+}
 #endif
-                if (!(engine.focusState & 1)) {
-                    engine.focusState = 1;
 
+bool ProcessEvents()
+{
 #if !RETRO_USE_ORIGINAL_CODE
-                    for (int32 c = 0; c < CHANNEL_COUNT; ++c) {
-                        engine.focusPausedChannel[c] = false;
-                        if (!(channels[c].state & CHANNEL_PAUSED)) {
-                            PauseChannel(c);
-                            engine.focusPausedChannel[c] = true;
-                        }
+#if RETRO_USING_SDL1 || RETRO_USING_SDL2
+    while (SDL_PollEvent(&Engine.sdlEvents)) {
+        // Main Events
+        switch (Engine.sdlEvents.type) {
+#if RETRO_USING_SDL2
+            case SDL_WINDOWEVENT:
+                switch (Engine.sdlEvents.window.event) {
+                    case SDL_WINDOWEVENT_MAXIMIZED: {
+                        SDL_RestoreWindow(Engine.window);
+                        SDL_SetWindowFullscreen(Engine.window, SDL_WINDOW_FULLSCREEN_DESKTOP);
+                        SDL_ShowCursor(SDL_FALSE);
+                        Engine.isFullScreen = true;
+                        break;
                     }
-#else
-                    PauseSound();
+                    case SDL_WINDOWEVENT_CLOSE: return false;
+                    case SDL_WINDOWEVENT_FOCUS_LOST:
+                        if (Engine.gameMode == ENGINE_MAINGAME && !(disableFocusPause & 1))
+                            Engine.gameMode = ENGINE_INITPAUSE;
+#if RETRO_REV00
+                        if (!(disableFocusPause & 1))
+                            Engine.message = MESSAGE_LOSTFOCUS;
 #endif
+                        Engine.hasFocus = false;
+                        break;
+                    case SDL_WINDOWEVENT_FOCUS_GAINED: Engine.hasFocus = true; break;
                 }
-            }
-            else if (engine.focusState) {
-                engine.focusState = 0;
+                break;
+            case SDL_CONTROLLERDEVICEADDED: controllerInit(Engine.sdlEvents.cdevice.which); break;
+            case SDL_CONTROLLERDEVICEREMOVED: controllerClose(Engine.sdlEvents.cdevice.which); break;
+            case SDL_APP_WILLENTERBACKGROUND:
+                if (Engine.gameMode == ENGINE_MAINGAME && !(disableFocusPause & 1))
+                    Engine.gameMode = ENGINE_INITPAUSE;
+#if RETRO_REV00
+                if (!(disableFocusPause & 1))
+                    Engine.message = MESSAGE_LOSTFOCUS;
+#endif
+                Engine.hasFocus = false;
+                break;
+            case SDL_APP_WILLENTERFOREGROUND: Engine.hasFocus = true; break;
+            case SDL_APP_TERMINATING: return false;
+#endif
 
-#if !RETRO_USE_ORIGINAL_CODE
-                for (int32 c = 0; c < CHANNEL_COUNT; ++c) {
-                    if (engine.focusPausedChannel[c])
-                        ResumeChannel(c);
-                    engine.focusPausedChannel[c] = false;
+#if RETRO_USING_SDL2 && defined(RETRO_USING_MOUSE)
+            case SDL_MOUSEMOTION:
+                if (touches <= 1) { // Touch always takes priority over mouse
+                    uint state = SDL_GetMouseState(&touchX[0], &touchY[0]);
+
+                    touchXF[0] = (((touchX[0] - displaySettings.offsetX) / (float)displaySettings.width) * SCREEN_XSIZE_F) - SCREEN_CENTERX_F;
+                    touchYF[0] = -(((touchY[0] / (float)displaySettings.height) * SCREEN_YSIZE_F) - SCREEN_CENTERY_F);
+                    touchX[0]  = ((touchX[0] - displaySettings.offsetX) / (float)displaySettings.width) * SCREEN_XSIZE;
+                    touchY[0]  = (touchY[0] / (float)displaySettings.height) * SCREEN_YSIZE;
+
+                    touchDown[0] = state & SDL_BUTTON_LMASK;
+                    if (touchDown[0])
+                        touches = 1;
                 }
-#else
-                ResumeSound();
-#endif
-            }
+                break;
+            case SDL_MOUSEBUTTONDOWN:
+                if (touches <= 1) { // Touch always takes priority over mouse
+                    switch (Engine.sdlEvents.button.button) {
+                        case SDL_BUTTON_LEFT: touchDown[0] = true; break;
+                    }
+                    touches = 1;
+                }
+                break;
+            case SDL_MOUSEBUTTONUP:
+                if (touches <= 1) { // Touch always takes priority over mouse
+                    switch (Engine.sdlEvents.button.button) {
+                        case SDL_BUTTON_LEFT: touchDown[0] = false; break;
+                    }
+                    touches = 0;
+                }
+                break;
 #endif
 
-            if (!engine.initialized || (engine.focusState & 1)) {
-                if (videoSettings.windowState != WINDOWSTATE_ACTIVE)
-                    continue;
-            }
-            else {
-                if (!engine.hardPause) {
-                    // common stuff
-                    foreachStackPtr = foreachStackList;
-#if !RETRO_USE_ORIGINAL_CODE
-                    debugHitboxCount = 0;
-#endif
+#if defined(RETRO_USING_TOUCH) && RETRO_USING_SDL2
+            case SDL_FINGERMOTION:
+            case SDL_FINGERDOWN:
+            case SDL_FINGERUP: {
+                int count = SDL_GetNumTouchFingers(Engine.sdlEvents.tfinger.touchId);
+                touches   = 0;
+                for (int i = 0; i < count; i++) {
+                    SDL_Finger *finger = SDL_GetTouchFinger(Engine.sdlEvents.tfinger.touchId, i);
+                    if (finger) {
+                        touchDown[touches] = true;
+                        touchX[touches]    = finger->x * SCREEN_XSIZE;
+                        touchY[touches]    = finger->y * SCREEN_YSIZE;
+                        touchXF[touches]   = (finger->x * SCREEN_XSIZE_F) - SCREEN_CENTERX_F;
+                        touchYF[touches]   = -((finger->y * SCREEN_YSIZE_F) - SCREEN_CENTERY_F);
 
+                        touchX[touches] -= displaySettings.offsetX;
+                        touchXF[touches] -= displaySettings.offsetX;
+
+                        touches++;
+                    }
+                }
+                break;
+            }
+#endif //! RETRO_USING_SDL2
+
+            case SDL_KEYDOWN:
+                switch (Engine.sdlEvents.key.keysym.sym) {
+                    default: break;
+                    case SDLK_ESCAPE:
+                        if (Engine.devMenu) {
 #if RETRO_USE_MOD_LOADER
-#if RETRO_REV0U
-                    if (((engine.version == 5 && sceneInfo.state != ENGINESTATE_DEVMENU)
-                         || (engine.version != 5 && RSDK::Legacy::gameMode != RSDK::Legacy::ENGINE_DEVMENU))
-                        && devMenu.modsChanged) {
-                        engine.version = 0;
-#else
-                    if (sceneInfo.state != ENGINESTATE_DEVMENU && devMenu.modsChanged) {
+                            // hacky patch because people can escape
+                            if (Engine.gameMode == ENGINE_DEVMENU && stageMode == DEVMENU_MODMENU)
+                                RefreshEngine();
 #endif
-                        devMenu.modsChanged = false;
-                        SaveMods();
-                        RefreshModFolders(true);
-                        LoadModSettings();
-                        for (int32 c = 0; c < CHANNEL_COUNT; ++c) StopChannel(c);
-#if RETRO_REV02
-                        forceHardReset = true;
-#endif
-
-#if RETRO_REV0U
-                        int32 preVersion = engine.version;
-
-                        DetectEngineVersion();
-                        if (!engine.version)
-                            engine.version = preVersion;
-
-                        SceneInfo pre      = sceneInfo;
-                        int32 preGameMode  = RSDK::Legacy::gameMode;
-                        int32 preStageMode = RSDK::Legacy::stageMode;
-
-                        // Clear some stuff
-                        sceneInfo.listData     = NULL;
-                        sceneInfo.listCategory = NULL;
-
-                        globalVarsPtr    = NULL;
-                        globalVarsInitCB = NULL;
-
-                        dataStorage[DATASET_STG].entryCount  = 0;
-                        dataStorage[DATASET_STG].usedStorage = 0;
-                        dataStorage[DATASET_SFX].entryCount  = 0;
-                        dataStorage[DATASET_SFX].usedStorage = 0;
-
-                        for (int32 o = 0; o < objectClassCount; ++o) {
-                            if (objectClassList[o].staticVars && *objectClassList[o].staticVars)
-                                (*objectClassList[o].staticVars) = NULL;
+                            ClearNativeObjects();
+                            CREATE_ENTITY(RetroGameLoop);
+                            if (Engine.gameDeviceType == RETRO_MOBILE)
+                                CREATE_ENTITY(VirtualDPad);
+                            Engine.gameMode = ENGINE_INITDEVMENU;
                         }
+                        break;
 
-                        InitEngine();
+                    case SDLK_F1:
+                        if (Engine.devMenu) {
+                            activeStageList   = 0;
+                            stageListPosition = 0;
+                            stageMode         = STAGEMODE_LOAD;
+                            Engine.gameMode   = ENGINE_MAINGAME;
+                        }
+                        break;
 
-                        switch (engine.version) {
-                            default:
-                            case 5:
-                                sceneInfo.classCount = pre.classCount;
-                                if (pre.state == ENGINESTATE_LOAD) {
-                                    sceneInfo.activeCategory = pre.activeCategory;
-                                    sceneInfo.listPos        = pre.listPos;
+                    case SDLK_F2:
+                        if (Engine.devMenu) {
+                            stageListPosition--;
+                            if (stageListPosition < 0) {
+                                activeStageList--;
+
+                                if (activeStageList < 0) {
+                                    activeStageList = 3;
                                 }
-                                break;
-                            case 4:
-                            case 3:
-                                if (preGameMode == RSDK::Legacy::ENGINE_MAINGAME && preStageMode == RSDK::Legacy::STAGEMODE_LOAD) {
-                                    sceneInfo.activeCategory = pre.activeCategory;
-                                    sceneInfo.listPos        = pre.listPos;
-                                }
-                                break;
-                        }
-
-#else
-                        SceneInfo pre = sceneInfo;
-                        InitEngine();
-                        sceneInfo.classCount = pre.classCount;
-                        if (pre.state == ENGINESTATE_LOAD) {
-                            sceneInfo.activeCategory = pre.activeCategory;
-                            sceneInfo.listPos        = pre.listPos;
-                        }
-#endif
-                        RenderDevice::SetWindowTitle();
-                        sceneInfo.state = ENGINESTATE_LOAD;
-                    }
-#endif
-
-                    // update device states and other stuff
-                    ProcessInputDevices();
-
-                    if (engine.devMenu)
-                        ProcessDebugCommands();
-
-#if RETRO_REV0U
-                    switch (engine.version) {
-                        default:
-                        case 5: ProcessEngine(); break;
-                        case 4: Legacy::v4::ProcessEngine(); break;
-                        case 3: Legacy::v3::ProcessEngine(); break;
-                    }
-#else
-                    ProcessEngine();
-#endif
-                }
-
-#if RETRO_PLATFORM == RETRO_ANDROID
-                HideLoadingIcon(); // best spot to do it
-#endif
-
-                if (videoSettings.windowState != WINDOWSTATE_ACTIVE)
-                    continue;
-
-#if !RETRO_USE_ORIGINAL_CODE
-                for (int32 t = 0; t < touchInfo.count; ++t) {
-                    if (touchInfo.down[t]) {
-                        int32 tx = (int32)(touchInfo.x[t] * screens->size.x);
-                        int32 ty = (int32)(touchInfo.y[t] * screens->size.y);
-
-                        if (tx <= 32 && ty <= 32) {
-                            if (engine.devMenu) {
-#if RETRO_REV0U
-                                if (sceneInfo.state != ENGINESTATE_DEVMENU && RSDK::Legacy::gameMode != RSDK::Legacy::ENGINE_DEVMENU)
-#else
-                                if (sceneInfo.state != ENGINESTATE_DEVMENU)
-#endif
-                                    OpenDevMenu();
+                                stageListPosition = stageListCount[activeStageList] - 1;
                             }
+                            stageMode       = STAGEMODE_LOAD;
+                            Engine.gameMode = ENGINE_MAINGAME;
+                            SetGlobalVariableByName("lampPostID", 0); // For S1
+                            SetGlobalVariableByName("starPostID", 0); // For S2
+                        }
+                        break;
+
+                    case SDLK_F3:
+                        if (Engine.devMenu) {
+                            stageListPosition++;
+                            if (stageListPosition >= stageListCount[activeStageList]) {
+                                activeStageList++;
+
+                                stageListPosition = 0;
+
+                                if (activeStageList >= 4) {
+                                    activeStageList = 0;
+                                }
+                            }
+                            stageMode       = STAGEMODE_LOAD;
+                            Engine.gameMode = ENGINE_MAINGAME;
+                            SetGlobalVariableByName("lampPostID", 0); // For S1
+                            SetGlobalVariableByName("starPostID", 0); // For S2
+                        }
+                        break;
+
+                    case SDLK_F4:
+                        Engine.isFullScreen ^= 1;
+                        SetFullScreen(Engine.isFullScreen);
+                        break;
+
+                    case SDLK_F5:
+                        if (Engine.devMenu) {
+                            currentStageFolder[0] = 0; // reload all assets & scripts
+                            stageMode             = STAGEMODE_LOAD;
+                        }
+                        break;
+
+                    case SDLK_F8:
+                        if (Engine.devMenu)
+                            showHitboxes ^= 2;
+                        break;
+
+                    case SDLK_F9:
+                        if (Engine.devMenu)
+                            showHitboxes ^= 1;
+                        break;
+
+                    case SDLK_F10:
+                        if (Engine.devMenu)
+                            Engine.showPaletteOverlay ^= 1;
+                        break;
+
+                    case SDLK_BACKSPACE:
+                        if (Engine.devMenu)
+                            Engine.gameSpeed = Engine.fastForwardSpeed;
+                        break;
+
+#if RETRO_PLATFORM == RETRO_OSX
+                    case SDLK_F6:
+                        if (Engine.masterPaused)
+                            Engine.frameStep = true;
+                        break;
+
+                    case SDLK_F7:
+                        if (Engine.devMenu)
+                            Engine.masterPaused ^= 1;
+                        break;
+#else
+                    case SDLK_F11:
+                    case SDLK_INSERT:
+                        if (Engine.masterPaused)
+                            Engine.frameStep = true;
+                        break;
+
+                    case SDLK_F12:
+                    case SDLK_PAUSE:
+                        if (Engine.devMenu)
+                            Engine.masterPaused ^= 1;
+                        break;
+#endif
+                }
+
+#if RETRO_USING_SDL1
+                keyState[Engine.sdlEvents.key.keysym.sym] = 1;
+#endif
+                break;
+            case SDL_KEYUP:
+                switch (Engine.sdlEvents.key.keysym.sym) {
+                    default: break;
+                    case SDLK_BACKSPACE: Engine.gameSpeed = 1; break;
+                }
+#if RETRO_USING_SDL1
+                keyState[Engine.sdlEvents.key.keysym.sym] = 0;
+#endif
+                break;
+            case SDL_QUIT: return false;
+        }
+    }
+#endif
+#endif
+    return true;
+}
+
+void RetroEngine::Init()
+{
+    CalculateTrigAngles();
+    GenerateBlendLookupTable();
+
+    CloseRSDKContainers(); // Clears files
+
+    Engine.usingDataFile = false;
+    Engine.usingBytecode = false;
+
+#if !RETRO_USE_ORIGINAL_CODE
+    InitUserdata();
+#if RETRO_USE_MOD_LOADER
+    InitMods();
+#endif
+#if RETRO_USE_NETWORKING
+    InitNetwork();
+#endif
+
+    char dest[0x200];
+#if RETRO_PLATFORM == RETRO_UWP
+    static char resourcePath[256] = { 0 };
+
+    if (strlen(resourcePath) == 0) {
+        auto folder = winrt::Windows::Storage::ApplicationData::Current().LocalFolder();
+        auto path   = to_string(folder.Path());
+
+        std::copy(path.begin(), path.end(), resourcePath);
+    }
+
+    strcpy(dest, resourcePath);
+    strcat(dest, "\\");
+    strcat(dest, Engine.dataFile);
+#elif RETRO_PLATFORM == RETRO_ANDROID
+    StrCopy(dest, gamePath);
+    StrAdd(dest, Engine.dataFile[0]);
+    disableFocusPause = 0; // focus pause is ALWAYS enabled.
+#else
+
+    StrCopy(dest, BASE_PATH);
+    StrAdd(dest, Engine.dataFile[0]);
+#endif
+    CheckRSDKFile(dest);
+#else
+    CheckRSDKFile("Data.rsdk");
+#endif
+
+#if !RETRO_USE_ORIGINAL_CODE
+    for (int i = 1; i < RETRO_PACK_COUNT; ++i) {
+        if (!StrComp(Engine.dataFile[i], "")) {
+            StrCopy(dest, BASE_PATH);
+            StrAdd(dest, Engine.dataFile[i]);
+            CheckRSDKFile(dest);
+        }
+    }
+#endif
+
+    gameMode = ENGINE_MAINGAME;
+    running  = false;
+#if !RETRO_USE_ORIGINAL_CODE
+    bool skipStart = skipStartMenu;
+#endif
+    SaveGame *saveGame = (SaveGame *)saveRAM;
+
+    if (LoadGameConfig("Data/Game/GameConfig.bin")) {
+        if (InitRenderDevice()) {
+            if (InitAudioPlayback()) {
+                InitFirstStage();
+                ClearScriptData();
+                initialised = true;
+                running     = true;
+
+#if !RETRO_USE_ORIGINAL_CODE
+                if ((startList_Game != 0xFF && startList_Game) || (startStage_Game != 0xFF && startStage_Game) || startPlayer != 0xFF) {
+                    skipStart = true;
+                    InitStartingStage(startList_Game == 0xFF ? STAGELIST_PRESENTATION : startList_Game, startStage_Game == 0xFF ? 0 : startStage_Game,
+                                      startPlayer == 0xFF ? 0 : startPlayer);
+                }
+                else if (startSave != 0xFF && startSave < 4) {
+                    if (startSave == 0) {
+                        SetGlobalVariableByName("options.saveSlot", 0);
+                        SetGlobalVariableByName("options.gameMode", 0);
+
+                        SetGlobalVariableByName("options.stageSelectFlag", 0);
+                        SetGlobalVariableByName("player.lives", 3);
+                        SetGlobalVariableByName("player.score", 0);
+                        SetGlobalVariableByName("player.scoreBonus", 50000);
+                        SetGlobalVariableByName("specialStage.emeralds", 0);
+                        SetGlobalVariableByName("specialStage.listPos", 0);
+                        SetGlobalVariableByName("stage.player2Enabled", 0);
+                        SetGlobalVariableByName("lampPostID", 0); // For S1
+                        SetGlobalVariableByName("starPostID", 0); // For S2
+                        SetGlobalVariableByName("options.vsMode", 0);
+
+                        SetGlobalVariableByName("specialStage.nextZone", 0);
+                        InitStartingStage(STAGELIST_REGULAR, 0, 0);
+                    }
+                    else {
+                        SetGlobalVariableByName("options.saveSlot", startSave);
+                        SetGlobalVariableByName("options.gameMode", 1);
+                        int slot = (startSave - 1) << 3;
+
+                        SetGlobalVariableByName("options.stageSelectFlag", false);
+                        SetGlobalVariableByName("player.lives", saveGame->files[slot].lives);
+                        SetGlobalVariableByName("player.score", saveGame->files[slot].score);
+                        SetGlobalVariableByName("player.scoreBonus", saveGame->files[slot].scoreBonus);
+                        SetGlobalVariableByName("specialStage.emeralds", saveGame->files[slot].emeralds);
+                        SetGlobalVariableByName("specialStage.listPos", saveGame->files[slot].specialStageID);
+                        SetGlobalVariableByName("stage.player2Enabled", saveGame->files[slot].characterID == 3);
+                        SetGlobalVariableByName("lampPostID", 0); // For S1
+                        SetGlobalVariableByName("starPostID", 0); // For S2
+                        SetGlobalVariableByName("options.vsMode", 0);
+
+                        int nextStage = saveGame->files[slot].stageID;
+                        if (nextStage >= 0x80) {
+                            SetGlobalVariableByName("specialStage.nextZone", nextStage - 0x81);
+                            InitStartingStage(STAGELIST_SPECIAL, saveGame->files[slot].specialStageID, saveGame->files[slot].characterID);
+                        }
+                        else if (nextStage >= 1) {
+                            SetGlobalVariableByName("specialStage.nextZone", nextStage - 1);
+                            InitStartingStage(STAGELIST_REGULAR, nextStage - 1, saveGame->files[slot].characterID);
+                        }
+                        else {
+                            saveGame->files[slot].characterID    = 0;
+                            saveGame->files[slot].lives          = 3;
+                            saveGame->files[slot].score          = 0;
+                            saveGame->files[slot].scoreBonus     = 50000;
+                            saveGame->files[slot].stageID        = 0;
+                            saveGame->files[slot].emeralds       = 0;
+                            saveGame->files[slot].specialStageID = 0;
+                            saveGame->files[slot].unused         = 0;
+
+                            SetGlobalVariableByName("specialStage.nextZone", 0);
+                            InitStartingStage(STAGELIST_REGULAR, 0, 0);
                         }
                     }
+                    skipStart = true;
                 }
 #endif
-                if (engine.inFocus == 1) {
-                    // Uncomment this code to add the build number to dev menu
-                    // overrides the game subtitle, used in switch dev menu
-                    if (currentScreen && sceneInfo.state == ENGINESTATE_DEVMENU) {
-                        // Switch 1.00 build # is 17051, 1.04 is 18403
-                        // char buffer[0x40];
-                        // sprintf(buffer, "Build #%d", 18403);
-                        // DrawRectangle(currentScreen->center.x - 128, currentScreen->center.y - 48, 256, 8, 0x008000, 0xFF, INK_NONE, true);
-                        // DrawDevString(buffer, currentScreen->center.x, currentScreen->center.y - 48, 1, 0xF0F0F0);
-                    }
-
-                    RenderDevice::CopyFrameBuffer();
-                }
             }
-
-            if ((engine.focusState & 1) || engine.inFocus == 1)
-                RenderDevice::ProcessDimming();
-
-            RenderDevice::FlipScreen();
         }
     }
 
-    // Shutdown
-
-    ReleaseInputDevices();
-    AudioDevice::Release();
-    RenderDevice::Release(false);
-    SaveSettingsINI(false);
-    SKU::ReleaseUserCore();
-    ReleaseStorage();
-#if RETRO_USE_MOD_LOADER
-    UnloadMods();
-#endif
-
-    Link::Close(gameLogicHandle);
-    gameLogicHandle = NULL;
-
-    if (engine.consoleEnabled)
-        ReleaseConsole();
-
-    return 0;
-}
-
-void RSDK::ProcessEngine()
-{
-    switch (sceneInfo.state) {
-        default: break;
-
-        case ENGINESTATE_LOAD:
-            if (!sceneInfo.listData) {
-                sceneInfo.state = ENGINESTATE_NONE;
-            }
-            else {
-#if RETRO_USE_MOD_LOADER
-                if (devMenu.modsChanged)
-                    RefreshModFolders();
-#endif
-                LoadSceneFolder();
-                LoadSceneAssets();
-                InitObjects();
-
-#if RETRO_REV02
 #if !RETRO_USE_ORIGINAL_CODE
-                AddViewableVariable("Show Hitboxes", &showHitboxes, VIEWVAR_BOOL, false, true);
-                AddViewableVariable("Show Palettes", &engine.showPaletteOverlay, VIEWVAR_BOOL, false, true);
-                AddViewableVariable("Show Obj Range", &engine.showUpdateRanges, VIEWVAR_UINT8, 0, 2);
-                AddViewableVariable("Show Obj Info", &engine.showEntityInfo, VIEWVAR_UINT8, 0, 2);
-#endif
-                SKU::userCore->StageLoad();
-                for (int32 v = 0; v < DRAWGROUP_COUNT; ++v)
-                    AddViewableVariable(drawGroupNames[v], &engine.drawGroupVisible[v], VIEWVAR_BOOL, false, true);
-#endif
-
-                // dim after 5 mins
-                videoSettings.dimLimit = (5 * 60) * videoSettings.refreshRate;
-                ProcessInput();
-                ProcessObjects();
-#if RETRO_VER_EGS || RETRO_USE_DUMMY_ACHIEVEMENTS
-                SKU::LoadAchievementAssets();
-#endif
-            }
-
-            break;
-
-        case ENGINESTATE_REGULAR:
-            ProcessInput();
-            ProcessSceneTimer();
-            ProcessObjects();
-            ProcessParallaxAutoScroll();
-
-            for (int32 i = 1; i < engine.gameSpeed; ++i) {
-                if (sceneInfo.state != ENGINESTATE_REGULAR)
-                    break;
-
-                ProcessSceneTimer();
-                ProcessObjects();
-                ProcessParallaxAutoScroll();
-            }
-
-#if RETRO_VER_EGS || RETRO_USE_DUMMY_ACHIEVEMENTS
-            SKU::ProcessAchievements();
-#endif
-            ProcessObjectDrawLists();
-
-            break;
-
-        case ENGINESTATE_PAUSED:
-            ProcessInput();
-            ProcessPausedObjects();
-
-            for (int32 i = 1; i < engine.gameSpeed; ++i) {
-                if (sceneInfo.state != ENGINESTATE_PAUSED)
-                    break;
-
-                ProcessPausedObjects();
-            }
-
-#if RETRO_VER_EGS || RETRO_USE_DUMMY_ACHIEVEMENTS
-            SKU::ProcessAchievements();
-#endif
-            ProcessObjectDrawLists();
-            break;
-
-        case ENGINESTATE_FROZEN:
-            ProcessInput();
-            ProcessFrozenObjects();
-
-            for (int32 i = 1; i < engine.gameSpeed; ++i) {
-                if (sceneInfo.state != ENGINESTATE_FROZEN)
-                    break;
-
-                ProcessFrozenObjects();
-            }
-
-#if RETRO_VER_EGS || RETRO_USE_DUMMY_ACHIEVEMENTS
-            SKU::ProcessAchievements();
-#endif
-            ProcessObjectDrawLists();
-            break;
-
-        case ENGINESTATE_LOAD | ENGINESTATE_STEPOVER:
+    gameType = GAME_SONIC2;
 #if RETRO_USE_MOD_LOADER
-            if (devMenu.modsChanged)
-                RefreshModFolders();
-#endif
-            LoadSceneFolder();
-            LoadSceneAssets();
-            InitObjects();
-
-#if RETRO_REV02
-#if !RETRO_USE_ORIGINAL_CODE
-            AddViewableVariable("Show Hitboxes", &showHitboxes, VIEWVAR_BOOL, false, true);
-            AddViewableVariable("Show Palettes", &engine.showPaletteOverlay, VIEWVAR_BOOL, false, true);
-            AddViewableVariable("Show Obj Range", &engine.showUpdateRanges, VIEWVAR_UINT8, 0, 2);
-            AddViewableVariable("Show Obj Info", &engine.showEntityInfo, VIEWVAR_UINT8, 0, 2);
-#endif
-            SKU::userCore->StageLoad();
-            for (int32 v = 0; v < DRAWGROUP_COUNT; ++v)
-                AddViewableVariable(drawGroupNames[v], &engine.drawGroupVisible[v], VIEWVAR_BOOL, false, true);
-#endif
-
-            ProcessInput();
-            ProcessObjects();
-            sceneInfo.state = ENGINESTATE_REGULAR | ENGINESTATE_STEPOVER;
-#if RETRO_VER_EGS || RETRO_USE_DUMMY_ACHIEVEMENTS
-            SKU::LoadAchievementAssets();
-#endif
-            break;
-
-        case ENGINESTATE_REGULAR | ENGINESTATE_STEPOVER:
-            ProcessInput();
-
-            if (engine.frameStep) {
-                ProcessSceneTimer();
-                ProcessObjects();
-                ProcessParallaxAutoScroll();
-#if RETRO_VER_EGS || RETRO_USE_DUMMY_ACHIEVEMENTS
-                SKU::ProcessAchievements();
-#endif
-                ProcessObjectDrawLists();
-                engine.frameStep = false;
-            }
-            break;
-
-        case ENGINESTATE_PAUSED | ENGINESTATE_STEPOVER:
-            ProcessInput();
-
-            if (engine.frameStep) {
-                ProcessPausedObjects();
-#if RETRO_VER_EGS || RETRO_USE_DUMMY_ACHIEVEMENTS
-                SKU::ProcessAchievements();
-#endif
-                ProcessObjectDrawLists();
-                engine.frameStep = false;
-            }
-            break;
-
-        case ENGINESTATE_FROZEN | ENGINESTATE_STEPOVER:
-            ProcessInput();
-
-            if (engine.frameStep) {
-                ProcessFrozenObjects();
-#if RETRO_VER_EGS || RETRO_USE_DUMMY_ACHIEVEMENTS
-                SKU::ProcessAchievements();
-#endif
-                ProcessObjectDrawLists();
-                engine.frameStep = false;
-            }
-            break;
-
-        case ENGINESTATE_DEVMENU:
-            ProcessInput();
-            currentScreen = &screens[0];
-
-            if (devMenu.state)
-                devMenu.state();
-            break;
-
-        case ENGINESTATE_VIDEOPLAYBACK:
-            ProcessInput();
-            ProcessVideo();
-            break;
-
-        case ENGINESTATE_SHOWIMAGE:
-            ProcessInput();
-
-            if (engine.imageFadeSpeed <= 0.0 || videoSettings.dimMax >= 1.0) {
-                if (engine.displayTime <= 0.0) {
-                    videoSettings.dimMax += engine.imageFadeSpeed;
-                    if (videoSettings.dimMax <= 0.0) {
-                        videoSettings.shaderID    = engine.storedShaderID;
-                        videoSettings.screenCount = 1;
-                        sceneInfo.state           = engine.storedState;
-                        videoSettings.dimMax      = 1.0;
-                    }
-                }
-                else {
-                    engine.displayTime -= (1.0 / 60.0); // deltaTime frame-step;
-#if RETRO_USE_MOD_LOADER
-                    RunModCallbacks(MODCB_ONVIDEOSKIPCB, (void *)engine.skipCallback);
-#endif
-                    if (engine.skipCallback && engine.skipCallback()) {
-                        engine.displayTime = 0.0;
-                    }
-                }
-            }
-            else {
-                videoSettings.dimMax += engine.imageFadeSpeed;
-                if (videoSettings.dimMax >= 1.0) {
-                    engine.imageFadeSpeed = -engine.imageFadeSpeed;
-                    videoSettings.dimMax  = 1.0;
-                }
-            }
-            break;
-
-#if RETRO_REV02
-        case ENGINESTATE_ERRORMSG: {
-            ProcessInput();
-
-            if (controller[0].keyStart.down)
-                sceneInfo.state = engine.storedState;
-
-            currentScreen = &screens[0];
-            int32 yOff    = DevOutput_GetStringYSize(outputString);
-            DrawRectangle(0, currentScreen->center.y - (yOff >> 1), currentScreen->size.x, yOff, 128, 255, INK_NONE, true);
-            DrawDevString(outputString, 8, currentScreen->center.y - (yOff >> 1) + 8, 0, 0xF0F0F0);
-            break;
-        }
-        case ENGINESTATE_ERRORMSG_FATAL: {
-            ProcessInput();
-
-            if (controller[0].keyStart.down)
-                RenderDevice::isRunning = false;
-
-            currentScreen = &screens[0];
-            int32 yOff    = DevOutput_GetStringYSize(outputString);
-            DrawRectangle(0, currentScreen->center.y - (yOff >> 1), currentScreen->size.x, yOff, 0xF00000, 255, INK_NONE, true);
-            DrawDevString(outputString, 8, currentScreen->center.y - (yOff >> 1) + 8, 0, 0xF0F0F0);
-            break;
-        }
-#endif
-    }
-}
-
-void RSDK::ParseArguments(int32 argc, char *argv[])
-{
-    memset(currentSceneFolder, 0, sizeof(currentSceneFolder));
-    memset(currentSceneID, 0, sizeof(currentSceneID));
-#if RETRO_REV02
-    sceneInfo.filter = 0;
-#endif
-
-    for (int32 a = 0; a < argc; ++a) {
-        const char *find = "";
-
-        find = strstr(argv[a], "stage=");
-        if (find) {
-            int32 b = 0;
-            int32 c = 6;
-            while (find[c] && find[c] != ';') currentSceneFolder[b++] = find[c++];
-            currentSceneFolder[b] = 0;
-        }
-
-        find = strstr(argv[a], "scene=");
-        if (find) {
-            int32 b = 0;
-            int32 c = 6;
-            while (find[c] && find[c] != ';') currentSceneID[b++] = find[c++];
-            currentSceneID[b] = 0;
-        }
-
-#if RETRO_REV02
-        find = strstr(argv[a], "filter=");
-        if (find) {
-            char buf[0x10];
-
-            int32 b = 0;
-            int32 c = 7;
-            while (argv[a][c] && find[c] != ';') buf[b++] = find[c++];
-            buf[b]           = 0;
-            sceneInfo.filter = atoi(buf);
-        }
-#endif
-
-        find = strstr(argv[a], "console=true");
-        if (find) {
-            engine.consoleEnabled = true;
-            engine.devMenu        = true;
-        }
-    }
-}
-
-void RSDK::InitEngine()
-{
-#if RETRO_PLATFORM == RETRO_ANDROID
-    ShowLoadingIcon(); // if valid
-#endif
-
-#if RETRO_REV0U
-    switch (engine.version) {
-        case 5:
-#endif
-            StartGameObjects();
-#if RETRO_REV0U
-            break;
-
-        case 4:
-            devMenu.state = DevMenu_MainMenu;
-            SetupFunctionTables();
-
-            Legacy::CalculateTrigAnglesM7();
-
-            engine.gamePlatform      = (RETRO_DEVICETYPE == RETRO_STANDARD ? "STANDARD" : "MOBILE");
-            engine.gameRenderType    = "SW_RENDERING";
-            engine.gameHapticSetting = "NO_F_FEEDBACK";
-#if !RETRO_USE_ORIGINAL_CODE
-            engine.releaseType = (engine.gameReleaseID ? "USE_ORIGINS" : "USE_STANDALONE");
-
-            Legacy::deviceType = RETRO_DEVICETYPE;
-            if (SKU::curSKU.language <= LANGUAGE_JP)
-                Legacy::language = SKU::curSKU.language;
-            else {
-                switch (SKU::curSKU.language) {
-                    default: Legacy::language = Legacy::LEGACY_LANGUAGE_EN; break;
-                    case LANGUAGE_KO: Legacy::language = Legacy::LEGACY_LANGUAGE_KO; break;
-                    case LANGUAGE_SC: Legacy::language = Legacy::LEGACY_LANGUAGE_ZS; break;
-                    case LANGUAGE_TC: Legacy::language = Legacy::LEGACY_LANGUAGE_ZH; break;
-                }
-            }
-#endif
-
-            Legacy::v4::LoadGameConfig("Data/Game/GameConfig.bin");
-            if (!useDataPack)
-                strcat(gameVerInfo.gameTitle, " (Using Data Folder)");
-            strcpy(gameVerInfo.version, "Legacy v4 Mode");
-
-            RSDK::GenerateBlendLookupTable();
-            Legacy::GenerateBlendLookupTable();
-            Legacy::v4::InitFirstStage();
-            Legacy::ResetCurrentStageFolder();
-            Legacy::v4::ClearScriptData();
-            break;
-
-        case 3:
-            devMenu.state = DevMenu_MainMenu;
-            SetupFunctionTables();
-
-            Legacy::CalculateTrigAnglesM7();
-
-            engine.gamePlatform      = (RETRO_DEVICETYPE == RETRO_STANDARD ? "Standard" : "Mobile");
-            engine.gameRenderType    = "SW_Rendering";
-            engine.gameHapticSetting = "No_Haptics";
-#if !RETRO_USE_ORIGINAL_CODE
-            engine.releaseType = (engine.gameReleaseID ? "Use_Origins" : "Use_Standalone");
-
-            Legacy::deviceType = RETRO_DEVICETYPE;
-            switch (RETRO_PLATFORM) {
-                default:
-                case RETRO_WIN: Legacy::gamePlatformID = Legacy::LEGACY_RETRO_WIN; break;
-                case RETRO_OSX: Legacy::gamePlatformID = Legacy::LEGACY_RETRO_OSX; break;
-                case RETRO_iOS: Legacy::gamePlatformID = Legacy::LEGACY_RETRO_iOS; break;
-                case RETRO_XB1: Legacy::gamePlatformID = Legacy::LEGACY_RETRO_XBOX_360; break;
-                case RETRO_PS4: Legacy::gamePlatformID = Legacy::LEGACY_RETRO_PS3; break;
-                case RETRO_ANDROID: Legacy::gamePlatformID = Legacy::LEGACY_RETRO_ANDROID; break;
-            }
-
-            if (SKU::curSKU.language <= LANGUAGE_JP)
-                Legacy::language = SKU::curSKU.language;
-            else
-                Legacy::language = Legacy::LEGACY_LANGUAGE_EN;
-#endif
-
-            Legacy::v3::LoadGameConfig("Data/Game/GameConfig.bin");
-            if (!useDataPack)
-                strcat(gameVerInfo.gameTitle, " (Using Data Folder)");
-            strcpy(gameVerInfo.version, "Legacy v3 Mode");
-
-            RSDK::GenerateBlendLookupTable();
-            Legacy::GenerateBlendLookupTable();
-            Legacy::v3::InitFirstStage();
-            Legacy::ResetCurrentStageFolder();
-            Legacy::v3::ClearScriptData();
-            break;
-    }
-#endif
-    engine.initialized = true;
-    engine.hardPause   = false;
-#if RETRO_PLATFORM == RETRO_ANDROID
-    SetLoadingIcon();
-#endif
-
-#if RETRO_USE_MOD_LOADER
-    RunModCallbacks(MODCB_ONGAMESTARTUP, NULL); // rerun those callbacks
-#endif
-}
-
-void RSDK::StartGameObjects()
-{
-#if RETRO_USE_MOD_LOADER
-    // ObjectClass is a non-POD struct because of std::function, we can't memset(0) or it would overwrite vtable data
-    for (int i = 0; i < OBJECT_COUNT; ++i) {
-        objectClassList[i] = {};
-    }
+    if (strstr(gameWindowText, "Sonic 1") || forceSonic1) {
 #else
-    memset(&objectClassList, 0, sizeof(objectClassList));
+    if (strstr(gameWindowText, "Sonic 1")) {
+#endif
+        gameType = GAME_SONIC1;
+    }
 #endif
 
-    sceneInfo.classCount     = 0;
-    sceneInfo.activeCategory = 0;
-    sceneInfo.listPos        = 0;
-    sceneInfo.state          = ENGINESTATE_LOAD;
-    sceneInfo.inEditor       = false;
-    sceneInfo.debugMode      = engine.devMenu;
-    devMenu.state            = DevMenu_MainMenu;
+#if !RETRO_USE_ORIGINAL_CODE
+    bool skipStore = skipStartMenu;
+    skipStartMenu  = skipStart;
+    InitNativeObjectSystem();
+    skipStartMenu = skipStore;
+#else
+    InitNativeObjectSystem();
+#endif
 
-    for (int32 l = 0; l < DRAWGROUP_COUNT; ++l) engine.drawGroupVisible[l] = true;
+#if !RETRO_USE_ORIGINAL_CODE
+    // Calculate Skip frame
+    int lower        = GetLowerRate(targetRefreshRate, refreshRate);
+    renderFrameIndex = targetRefreshRate / lower;
+    skipFrameIndex   = refreshRate / lower;
 
-    SetupFunctionTables();
-    InitGameLink();
-    LoadGameConfig();
+    ReadSaveRAMData();
+
+    if (Engine.gameType == GAME_SONIC1) {
+        AddAchievement("Ramp Ring Acrobatics",
+                       "Without touching the ground,\rcollect all the rings in a\rtrapezoid formation in Green\rHill Zone Act 1");
+        AddAchievement("Blast Processing", "Clear Green Hill Zone Act 1\rin under 30 seconds");
+        AddAchievement("Secret of Marble Zone", "Travel though a secret\rroom in Marbale Zone Act 3");
+        AddAchievement("Block Buster", "Break 16 blocks in a row\rwithout stopping");
+        AddAchievement("Ring King", "Collect 200 Rings");
+        AddAchievement("Secret of Labyrinth Zone", "Activate and ride the\rhidden platform in\rLabyrinth Zone Act 1");
+        AddAchievement("Flawless Pursuit", "Clear the boss in Labyrinth\rZone without getting hurt");
+        AddAchievement("Bombs Away", "Defeat the boss in Starlight Zone\rusing only the see-saw bombs");
+        AddAchievement("Hidden Transporter", "Collect 50 Rings and take the hidden transporter path\rin Scrap Brain Act 2");
+        AddAchievement("Chaos Connoisseur", "Collect all the chaos\remeralds");
+        AddAchievement("One For the Road", "As a parting gift, land a\rfinal hit on Dr. Eggman's\rescaping Egg Mobile");
+        AddAchievement("Beat The Clock", "Clear the Time Attack\rmode in less than 45\rminutes");
+    }
+    else if (Engine.gameType == GAME_SONIC2) {
+        AddAchievement("Quick Run", "Complete Emerald Hill\rZone Act 1 in under 35\rseconds");
+        AddAchievement("100% Chemical Free", "Complete Chemical Plant\rwithout going underwater");
+        AddAchievement("Early Bird Special", "Collect all the Chaos\rEmeralds before Chemical\rPlant");
+        AddAchievement("Superstar", "Complete any Act as\rSuper Sonic");
+        AddAchievement("Hit it Big", "Get a jackpot on the Casino Night slot machines");
+        AddAchievement("Bop Non-stop", "Defeat any boss in 8\rconsecutive hits without\rtouching he ground");
+        AddAchievement("Perfectionist", "Get a Perfect Bonus by\rcollecting every Ring in an\rAct");
+        AddAchievement("A Secret Revealed", "Find and complete\rHidden Palace Zone");
+        AddAchievement("Head 2 Head", "Win a 2P Versus race\ragainst a friend");
+        AddAchievement("Metropolis Master", "Complete Any Metropolis\rZone Act without getting\rhurt");
+        AddAchievement("Scrambled Egg", "Defeat Dr. Eggman's Boss\rAttack mode in under 7\rminutes");
+        AddAchievement("Beat the Clock", "Complete the Time Attack\rmode in less than 45\rminutes");
+    }
+
+    if (skipStart)
+        Engine.gameMode = ENGINE_MAINGAME;
+    else
+        Engine.gameMode = ENGINE_WAIT;
+
+    // "error message"
+    if (!running) {
+        char rootDir[0x80];
+        char pathBuffer[0x80];
+
+#if RETRO_PLATFORM == RETRO_UWP
+        if (!usingCWD)
+            sprintf(rootDir, "%s/", getResourcesPath());
+        else
+            sprintf(rootDir, "%s", "");
+#elif RETRO_PLATFORM == RETRO_OSX
+        sprintf(rootDir, "%s/", gamePath);
+#else
+        sprintf(rootDir, "%s", "");
+#endif
+        sprintf(pathBuffer, "%s%s", rootDir, "usage.txt");
+
+        FileIO *f;
+        if ((f = fOpen(pathBuffer, "w")) == NULL) {
+            PrintLog("ERROR: Couldn't open file '%s' for writing!", "usage.txt");
+            return;
+        }
+
+        char textBuf[0x100];
+        sprintf(textBuf, "RETRO ENGINE v4 USAGE:\n");
+        fWrite(textBuf, 1, strlen(textBuf), f);
+
+        sprintf(textBuf, "- Open the asset directory '%s' in a file browser\n", !rootDir[0] ? "./" : rootDir);
+        fWrite(textBuf, 1, strlen(textBuf), f);
+
+        sprintf(textBuf, "- Place a data pack named '%s' in the asset directory\n", Engine.dataFile[0]);
+        fWrite(textBuf, 1, strlen(textBuf), f);
+
+        sprintf(textBuf, "- OR extract a data pack and place the \"Data\" & \"Bytecode\" folders in the asset directory\n");
+        fWrite(textBuf, 1, strlen(textBuf), f);
+
+        fClose(f);
+    }
+
+#endif
+}
+
+void RetroEngine::Run()
+{
+    Engine.deltaTime = 0.0f;
+
+    unsigned long long targetFreq = SDL_GetPerformanceFrequency() / Engine.refreshRate;
+    unsigned long long curTicks   = 0;
+    unsigned long long prevTicks  = 0;
+
+    while (running) {
+#if !RETRO_USE_ORIGINAL_CODE
+        if (!vsync) {
+            curTicks = SDL_GetPerformanceCounter();
+            if (curTicks < prevTicks + targetFreq)
+                continue;
+            prevTicks = curTicks;
+        }
+
+        Engine.deltaTime = 1.0 / 60;
+#endif
+        running = ProcessEvents();
+
+        // Focus Checks
+        if (!(disableFocusPause & 2)) {
+            if (!Engine.hasFocus) {
+                if (!(Engine.focusState & 1))
+                    Engine.focusState = PauseSound() ? 3 : 1;
+            }
+            else if (Engine.focusState) {
+                if ((Engine.focusState & 2))
+                    ResumeSound();
+                Engine.focusState = 0;
+            }
+        }
+
+        if (!(Engine.focusState & 1) || vsPlaying) {
+#if !RETRO_USE_ORIGINAL_CODE
+            for (int s = 0; s < gameSpeed; ++s) {
+                ProcessInput();
+#endif
+
+#if !RETRO_USE_ORIGINAL_CODE
+                if (!masterPaused || frameStep) {
+#endif
+                    ProcessNativeObjects();
+#if !RETRO_USE_ORIGINAL_CODE
+                }
+#endif
+            }
+
+#if !RETRO_USE_ORIGINAL_CODE
+            if (!masterPaused || frameStep) {
+#endif
+                FlipScreen();
+
+#if !RETRO_USE_ORIGINAL_CODE
+#if RETRO_USING_OPENGL && RETRO_USING_SDL2
+                SDL_GL_SwapWindow(Engine.window);
+#endif
+                frameStep = false;
+            }
+#endif
+
+#if RETRO_REV00
+            Engine.message = MESSAGE_NONE;
+#endif
+
+#if RETRO_USE_HAPTICS
+            int hapticID = GetHapticEffectNum();
+            if (hapticID >= 0) {
+                // playHaptics(hapticID);
+            }
+            else if (hapticID == HAPTIC_STOP) {
+                // stopHaptics();
+            }
+#endif
+        }
+    }
+
+    ReleaseAudioDevice();
+    ReleaseRenderDevice();
+#if !RETRO_USE_ORIGINAL_CODE
+    ReleaseInputDevices();
+#if RETRO_USE_NETWORKING
+    DisconnectNetwork(true);
+#endif
+    WriteSettings();
+#if RETRO_USE_MOD_LOADER
+    SaveMods();
+#endif
+#endif
+
+#if RETRO_USING_SDL1 || RETRO_USING_SDL2
+    SDL_Quit();
+#endif
 }
 
 #if RETRO_USE_MOD_LOADER
-void RSDK::LoadGameXML(bool pal)
+const tinyxml2::XMLElement *FirstXMLChildElement(tinyxml2::XMLDocument *doc, const tinyxml2::XMLElement *elementPtr, const char *name)
+{
+    if (doc) {
+        if (!elementPtr)
+            return doc->FirstChildElement(name);
+        else
+            return elementPtr->FirstChildElement(name);
+    }
+    return NULL;
+}
+
+const tinyxml2::XMLElement *NextXMLSiblingElement(tinyxml2::XMLDocument *doc, const tinyxml2::XMLElement *elementPtr, const char *name)
+{
+    if (doc) {
+        if (!elementPtr)
+            return doc->NextSiblingElement(name);
+        else
+            return elementPtr->NextSiblingElement(name);
+    }
+    return NULL;
+}
+
+const tinyxml2::XMLAttribute *FindXMLAttribute(const tinyxml2::XMLElement *elementPtr, const char *name) { return elementPtr->FindAttribute(name); }
+const char *GetXMLAttributeName(const tinyxml2::XMLAttribute *attributePtr) { return attributePtr->Name(); }
+int GetXMLAttributeValueInt(const tinyxml2::XMLAttribute *attributePtr) { return attributePtr->IntValue(); }
+bool GetXMLAttributeValueBool(const tinyxml2::XMLAttribute *attributePtr) { return attributePtr->BoolValue(); }
+const char *GetXMLAttributeValueString(const tinyxml2::XMLAttribute *attributePtr) { return attributePtr->Value(); }
+
+void RetroEngine::LoadXMLWindowText()
 {
     FileInfo info;
-    SortMods();
-    for (int32 m = 0; m < modList.size(); ++m) {
+    for (int m = 0; m < (int)modList.size(); ++m) {
         if (!modList[m].active)
-            break;
+            continue;
+
         SetActiveMod(m);
-        InitFileInfo(&info);
-        if (LoadFile(&info, "Data/Game/Game.xml", FMODE_RB)) {
+        if (LoadFile("Data/Game/Game.xml", &info)) {
             tinyxml2::XMLDocument *doc = new tinyxml2::XMLDocument;
 
             char *xmlData = new char[info.fileSize + 1];
-            ReadBytes(&info, xmlData, info.fileSize);
+            FileRead(xmlData, info.fileSize);
             xmlData[info.fileSize] = 0;
-            CloseFile(&info);
 
-            doc->Parse(xmlData);
-            const tinyxml2::XMLElement *gameElement = doc->FirstChildElement("game"); // gameElement is nullptr if parse failure
+            bool success = doc->Parse(xmlData) == tinyxml2::XML_SUCCESS;
 
-            if (gameElement) {
-                if (pal)
-                    LoadXMLPalettes(gameElement);
-                else {
-                    LoadXMLWindowText(gameElement);
-                    LoadXMLObjects(gameElement);
-                    LoadXMLSoundFX(gameElement);
-                    LoadXMLStages(gameElement);
+            if (success) {
+                const tinyxml2::XMLElement *gameElement  = FirstXMLChildElement(doc, nullptr, "game");
+                const tinyxml2::XMLElement *titleElement = FirstXMLChildElement(doc, gameElement, "title");
+                if (titleElement) {
+                    const tinyxml2::XMLAttribute *nameAttr = FindXMLAttribute(titleElement, "name");
+                    if (nameAttr)
+                        StrCopy(gameWindowText, GetXMLAttributeValueString(nameAttr));
                 }
-            }
-            else {
-                PrintLog(PRINT_NORMAL, "[MOD] Failed to parse Game.xml file for mod %s", modList[m].id.c_str());
             }
 
             delete[] xmlData;
             delete doc;
+
+            CloseFile();
         }
     }
     SetActiveMod(-1);
 }
-
-void RSDK::LoadXMLWindowText(const tinyxml2::XMLElement *gameElement)
-{
-    const tinyxml2::XMLElement *titleElement = gameElement->FirstChildElement("title");
-    if (titleElement) {
-        const tinyxml2::XMLAttribute *nameAttr = titleElement->FindAttribute("name");
-        if (nameAttr)
-            strcpy(gameVerInfo.gameTitle, nameAttr->Value());
-    }
-}
-
-void RSDK::LoadXMLPalettes(const tinyxml2::XMLElement *gameElement)
-{
-    const tinyxml2::XMLElement *paletteElement = gameElement->FirstChildElement("palette");
-    if (paletteElement) {
-        for (const tinyxml2::XMLElement *clrElement = paletteElement->FirstChildElement("color"); clrElement;
-            clrElement                             = clrElement->NextSiblingElement("color")) {
-            const tinyxml2::XMLAttribute *bankAttr = clrElement->FindAttribute("bank");
-            int32 bank                             = 0;
-            if (bankAttr)
-                bank = bankAttr->IntValue();
-
-            const tinyxml2::XMLAttribute *indAttr = clrElement->FindAttribute("index");
-            int32 index                           = 0;
-            if (indAttr)
-                index = indAttr->IntValue();
-
-            const tinyxml2::XMLAttribute *rAttr = clrElement->FindAttribute("r");
-            int32 r                             = 0;
-            if (rAttr)
-                r = rAttr->IntValue();
-
-            const tinyxml2::XMLAttribute *gAttr = clrElement->FindAttribute("g");
-            int32 g                             = 0;
-            if (gAttr)
-                g = gAttr->IntValue();
-
-            const tinyxml2::XMLAttribute *bAttr = clrElement->FindAttribute("b");
-            int32 b                             = 0;
-            if (bAttr)
-                b = bAttr->IntValue();
-
-            SetPaletteEntry(bank, index, (r << 16) | (g << 8) | b);
-        }
-
-        for (const tinyxml2::XMLElement *clrsElement = paletteElement->FirstChildElement("colors"); clrsElement;
-            clrsElement                             = clrsElement->NextSiblingElement("colors")) {
-            const tinyxml2::XMLAttribute *bankAttr = clrsElement->FindAttribute("bank");
-            int32 bank                             = 0;
-            if (bankAttr)
-                bank = bankAttr->IntValue();
-
-            const tinyxml2::XMLAttribute *indAttr = clrsElement->FindAttribute("start");
-            int32 index                           = 0;
-            if (indAttr)
-                index = indAttr->IntValue();
-
-            std::string text = clrsElement->GetText();
-            // working: AABBFF #FFaaFF (12,32,34) (145 53 234)
-            std::regex search(R"((?:#?([0-9A-F]{6}))|(?:\((\d+),?\s*(\d+),?\s*(\d+)\)))",
-                              std::regex_constants::icase | std::regex_constants::ECMAScript);
-            std::smatch match;
-            while (std::regex_search(text, match, search)) {
-                int32 color;
-                if (match[1].matched) {
-                    // we have hex, just set color directly lol
-                    color = std::stoi(match[1].str(), nullptr, 16);
-                }
-                else {
-                    // triplet
-                    int32 r = std::stoi(match[2 + 0].str(), nullptr, 10);
-                    int32 g = std::stoi(match[2 + 1].str(), nullptr, 10);
-                    int32 b = std::stoi(match[2 + 2].str(), nullptr, 10);
-                    color   = (r << 16) | (g << 8) | b;
-                }
-
-                SetPaletteEntry(bank, index++, color);
-                text = match.suffix();
-            }
-        }
-    }
-}
-
-void RSDK::LoadXMLObjects(const tinyxml2::XMLElement *gameElement)
-{
-    const tinyxml2::XMLElement *objectsElement = gameElement->FirstChildElement("objects");
-    if (objectsElement) {
-        for (const tinyxml2::XMLElement *objElement = objectsElement->FirstChildElement("object"); objElement;
-            objElement                             = objElement->NextSiblingElement("object")) {
-            const tinyxml2::XMLAttribute *nameAttr = objElement->FindAttribute("name");
-            const char *objName                    = "unknownObject";
-            if (nameAttr)
-                objName = nameAttr->Value();
-
-            RETRO_HASH_MD5(hash);
-            GEN_HASH_MD5(objName, hash);
-            globalObjectIDs[globalObjectCount] = 0;
-            for (int32 objID = 0; objID < objectClassCount; ++objID) {
-                if (HASH_MATCH_MD5(hash, objectClassList[objID].hash)) {
-                    globalObjectIDs[globalObjectCount] = objID;
-                    globalObjectCount++;
-                }
-            }
-        }
-    }
-}
-
-void RSDK::LoadXMLSoundFX(const tinyxml2::XMLElement *gameElement)
-{
-    const tinyxml2::XMLElement *soundsElement = gameElement->FirstChildElement("sounds");
-    if (soundsElement) {
-        for (const tinyxml2::XMLElement *sfxElement = soundsElement->FirstChildElement("soundfx"); sfxElement;
-            sfxElement                             = sfxElement->NextSiblingElement("soundfx")) {
-            const tinyxml2::XMLAttribute *valAttr = sfxElement->FindAttribute("path");
-            const char *sfxPath                   = "unknownSFX.wav";
-            if (valAttr)
-                sfxPath = valAttr->Value();
-
-            const tinyxml2::XMLAttribute *playsAttr = sfxElement->FindAttribute("maxConcurrentPlays");
-            int32 maxConcurrentPlays                = 0;
-            if (playsAttr)
-                maxConcurrentPlays = playsAttr->IntValue();
-
-            LoadSfx((char *)sfxPath, maxConcurrentPlays, SCOPE_GLOBAL);
-        }
-    }
-}
-
-#if !RETRO_REV0U
-std::vector<SceneListEntry> listData;
-std::vector<SceneListInfo> listCategory;
-#endif
-
-void RSDK::LoadXMLStages(const tinyxml2::XMLElement *gameElement)
-{
-
-    for (const tinyxml2::XMLElement *listElement = gameElement->FirstChildElement("category"); listElement;
-        listElement                             = listElement->NextSiblingElement("category")) {
-        SceneListInfo *list = nullptr;
-        int32 listID;
-
-        const tinyxml2::XMLAttribute *nameAttr = listElement->FindAttribute("name");
-        const char *lstName                    = "unknown list";
-        if (nameAttr)
-            lstName = nameAttr->Value();
-        RETRO_HASH_MD5(hash);
-        GEN_HASH_MD5(lstName, hash);
-
-        for (int l = 0; l < listCategory.size(); ++l) {
-            if (HASH_MATCH_MD5(hash, listCategory[l].hash)) {
-                list   = &listCategory[l];
-                listID = l;
-            }
-        }
-
-        if (!list) {
-            listCategory.emplace_back();
-            list = &listCategory.back();
-            sprintf_s(list->name, sizeof(list->name), "%s", lstName);
-            HASH_COPY_MD5(list->hash, hash);
-
-            list->sceneOffsetStart = listData.size();
-            list->sceneOffsetEnd   = listData.size();
-            list->sceneCount       = 0;
-            sceneInfo.categoryCount++;
-        }
-
-        for (const tinyxml2::XMLElement *stgElement = listElement->FirstChildElement("stage"); stgElement;
-            stgElement                             = stgElement->NextSiblingElement("stage")) {
-            const tinyxml2::XMLAttribute *nameAttr = stgElement->FindAttribute("name");
-            const char *stgName                    = "unknownStage";
-            if (nameAttr)
-                stgName = nameAttr->Value();
-
-            const tinyxml2::XMLAttribute *folderAttr = stgElement->FindAttribute("folder");
-            const char *stgFolder                    = "unknownStageFolder";
-            if (folderAttr)
-                stgFolder = folderAttr->Value();
-
-            const tinyxml2::XMLAttribute *idAttr = stgElement->FindAttribute("id");
-            const char *stgID                    = "unknownStageID";
-            if (idAttr)
-                stgID = idAttr->Value();
-
-#if RETRO_REV02
-            const tinyxml2::XMLAttribute *filterAttr = stgElement->FindAttribute("filter");
-            int32 stgFilter                          = 0;
-            if (stgFilter)
-                stgFilter = filterAttr->IntValue();
-#endif
-            listData.emplace(listData.begin() + list->sceneOffsetEnd);
-            SceneListEntry *scene = &listData[list->sceneOffsetEnd];
-
-            sprintf_s(scene->name, sizeof(scene->name), "%s", stgName);
-            GEN_HASH_MD5(scene->name, scene->hash);
-            sprintf_s(scene->folder, sizeof(scene->folder), "%s", stgFolder);
-            sprintf_s(scene->id, sizeof(scene->id), "%s", stgID);
-
-#if RETRO_REV02
-            scene->filter = stgFilter;
-            if (scene->filter == 0x00)
-                scene->filter = 0xFF;
-#endif
-            list->sceneCount++;
-            list->sceneOffsetEnd++;
-            for (int32 l = listID + 1; l < listCategory.size(); ++l) listCategory[l].sceneOffsetStart++;
-        }
-    }
-    sceneInfo.listData     = listData.data();
-    sceneInfo.listCategory = listCategory.data();
-}
-#endif
-
-void RSDK::LoadGameConfig()
+void RetroEngine::LoadXMLVariables()
 {
     FileInfo info;
-    InitFileInfo(&info);
+    for (int m = 0; m < (int)modList.size(); ++m) {
+        if (!modList[m].active)
+            continue;
 
-    if (LoadFile(&info, "Data/Game/GameConfig.bin", FMODE_RB)) {
-        char buffer[0x100];
-        uint32 sig = ReadInt32(&info, false);
+        SetActiveMod(m);
+        if (LoadFile("Data/Game/Game.xml", &info)) {
+            tinyxml2::XMLDocument *doc = new tinyxml2::XMLDocument;
 
-        if (sig != RSDK_SIGNATURE_CFG) {
-            CloseFile(&info);
-            return;
-        }
+            char *xmlData = new char[info.fileSize + 1];
+            FileRead(xmlData, info.fileSize);
+            xmlData[info.fileSize] = 0;
 
-        ReadString(&info, gameVerInfo.gameTitle);
-        if (!useDataPack)
-            strcat(gameVerInfo.gameTitle, " (Data Folder)");
-        ReadString(&info, gameVerInfo.gameSubtitle);
-        ReadString(&info, gameVerInfo.version);
+            bool success = doc->Parse(xmlData) == tinyxml2::XML_SUCCESS;
 
-        sceneInfo.activeCategory = ReadInt8(&info);
-        int32 startScene         = ReadInt16(&info);
+            if (success) {
+                const tinyxml2::XMLElement *gameElement      = FirstXMLChildElement(doc, nullptr, "game");
+                const tinyxml2::XMLElement *variablesElement = FirstXMLChildElement(doc, gameElement, "variables");
+                if (variablesElement) {
+                    const tinyxml2::XMLElement *varElement = FirstXMLChildElement(doc, variablesElement, "variable");
+                    if (varElement) {
+                        do {
+                            const tinyxml2::XMLAttribute *nameAttr = FindXMLAttribute(varElement, "name");
+                            const char *varName                    = "unknownVariable";
+                            if (nameAttr)
+                                varName = GetXMLAttributeValueString(nameAttr);
 
-        uint8 objCnt      = ReadInt8(&info);
-        globalObjectCount = TYPE_DEFAULT_COUNT;
-        for (int32 i = 0; i < objCnt; ++i) {
-            ReadString(&info, textBuffer);
+                            const tinyxml2::XMLAttribute *valAttr = FindXMLAttribute(varElement, "value");
+                            int varValue                          = 0;
+                            if (valAttr)
+                                varValue = GetXMLAttributeValueInt(valAttr);
 
-            RETRO_HASH_MD5(hash);
-            GEN_HASH_MD5_BUFFER(textBuffer, hash);
+                            StrCopy(globalVariableNames[globalVariablesCount], varName);
+                            globalVariables[globalVariablesCount] = varValue;
+                            globalVariablesCount++;
 
-            if (objectClassCount > 0) {
-                globalObjectIDs[globalObjectCount] = 0;
-                for (int32 objID = 0; objID < objectClassCount; ++objID) {
-                    if (HASH_MATCH_MD5(hash, objectClassList[objID].hash)) {
-                        globalObjectIDs[globalObjectCount] = objID;
-                        globalObjectCount++;
+                        } while ((varElement = NextXMLSiblingElement(doc, varElement, "variable")));
                     }
                 }
             }
+
+            delete[] xmlData;
+            delete doc;
+
+            CloseFile();
         }
-
-        for (int32 i = 0; i < PALETTE_BANK_COUNT; ++i) {
-            activeGlobalRows[i] = ReadInt16(&info);
-            for (int32 r = 0; r < 0x10; ++r) {
-                if ((activeGlobalRows[i] >> r & 1)) {
-                    for (int32 c = 0; c < 0x10; ++c) {
-                        uint8 red                      = ReadInt8(&info);
-                        uint8 green                    = ReadInt8(&info);
-                        uint8 blue                     = ReadInt8(&info);
-                        globalPalette[i][(r << 4) + c] = rgb32To16_B[blue] | rgb32To16_G[green] | rgb32To16_R[red];
-                    }
-                }
-                else {
-                    for (int32 c = 0; c < 0x10; ++c) globalPalette[i][(r << 4) + c] = 0;
-                }
-            }
-        }
-
-        uint8 sfxCnt = ReadInt8(&info);
-        for (int32 i = 0; i < sfxCnt; ++i) {
-            ReadString(&info, buffer);
-            uint8 maxConcurrentPlays = ReadInt8(&info);
-            LoadSfx(buffer, maxConcurrentPlays, SCOPE_GLOBAL);
-        }
-
-        uint16 totalSceneCount = ReadInt16(&info);
-
-        if (!totalSceneCount)
-            totalSceneCount = 1;
-
-        if (strlen(currentSceneFolder) && strlen(currentSceneID)) {
-#if RETRO_USE_MOD_LOADER
-            listData.resize(totalSceneCount + 1);
-            sceneInfo.listData = listData.data();
-#else
-            AllocateStorage((void **)&sceneInfo.listData, sizeof(SceneListEntry) * (totalSceneCount + 1), DATASET_STG, false);
-#endif
-            SceneListEntry *scene = &sceneInfo.listData[totalSceneCount];
-            strcpy(scene->name, "_RSDK_SCENE");
-            strcpy(scene->folder, currentSceneFolder);
-            strcpy(scene->id, currentSceneID);
-#if RETRO_REV02
-            scene->filter = sceneInfo.filter;
-#endif
-            GEN_HASH_MD5(scene->name, scene->hash);
-
-            // Override existing values
-            sceneInfo.activeCategory = 0;
-            startScene               = totalSceneCount;
-            currentSceneFolder[0]    = 0;
-            currentSceneID[0]        = 0;
-        }
-        else {
-#if RETRO_USE_MOD_LOADER
-            listData.resize(totalSceneCount);
-            sceneInfo.listData = listData.data();
-#else
-            AllocateStorage((void **)&sceneInfo.listData, sizeof(SceneListEntry) * totalSceneCount, DATASET_STG, false);
-#endif
-        }
-
-        sceneInfo.categoryCount = ReadInt8(&info);
-        sceneInfo.listPos       = 0;
-
-        int32 categoryCount = sceneInfo.categoryCount;
-
-        if (!categoryCount)
-            categoryCount = 1;
-
-#if RETRO_USE_MOD_LOADER
-        listCategory.resize(categoryCount);
-        sceneInfo.listCategory = listCategory.data();
-#else
-        AllocateStorage((void **)&sceneInfo.listCategory, sizeof(SceneListInfo) * categoryCount, DATASET_STG, false);
-#endif
-        sceneInfo.listPos = 0;
-
-        int32 sceneID = 0;
-        for (int32 i = 0; i < sceneInfo.categoryCount; ++i) {
-            SceneListInfo *category = &sceneInfo.listCategory[i];
-            ReadString(&info, category->name);
-            GEN_HASH_MD5(category->name, category->hash);
-
-            category->sceneOffsetStart = sceneID;
-            category->sceneCount       = ReadInt8(&info);
-            for (int32 s = 0; s < category->sceneCount; ++s) {
-                SceneListEntry *scene = &sceneInfo.listData[sceneID + s];
-                ReadString(&info, scene->name);
-                GEN_HASH_MD5(scene->name, scene->hash);
-
-                ReadString(&info, scene->folder);
-                ReadString(&info, scene->id);
-
-#if RETRO_REV02
-                scene->filter = ReadInt8(&info);
-                if (scene->filter == 0x00)
-                    scene->filter = 0xFF;
-#endif
-            }
-            category->sceneOffsetEnd = category->sceneCount ? category->sceneOffsetStart + category->sceneCount - 1 : 0;
-            sceneID += category->sceneCount;
-        }
-
-        uint8 varCount = ReadInt8(&info);
-        for (int32 i = 0; i < varCount; ++i) {
-#if RETRO_REV0U
-            // v5U Ditches this in favour of the InitVarsCB method
-            ReadInt32(&info, false);
-            int32 count = ReadInt32(&info, false);
-            for (int32 v = 0; v < count; ++v) ReadInt32(&info, false);
-#else
-            if (!globalVarsPtr)
-                break;
-            // standard v5 loads variables directly into the struct
-            int32 offset = ReadInt32(&info, false);
-            int32 count  = ReadInt32(&info, false);
-            for (int32 v = 0; v < count; ++v) {
-                globalVarsPtr[offset + v] = ReadInt32(&info, false);
-            }
-#endif
-        }
-
-        CloseFile(&info);
-#if RETRO_USE_MOD_LOADER
-        LoadGameXML();
-#endif
-
-#if RETRO_REV0U
-        if (globalVarsInitCB)
-            globalVarsInitCB(globalVarsPtr);
-#endif
-
-        sceneInfo.listPos = sceneInfo.listCategory[sceneInfo.activeCategory].sceneOffsetStart + startScene;
     }
+    SetActiveMod(-1);
 }
-
-void RSDK::InitGameLink()
+void RetroEngine::LoadXMLPalettes()
 {
-#if RETRO_USE_MOD_LOADER
-    objectClassCount = 0;
-    memset(globalObjectIDs, 0, sizeof(globalObjectIDs));
-    memset(objectEntityList, 0, sizeof(objectEntityList));
-    editableVarCount = 0;
-    foreachStackPtr  = foreachStackList;
-    currentMod       = NULL;
-#endif
+    FileInfo info;
+    for (int m = 0; m < (int)modList.size(); ++m) {
+        if (!modList[m].active)
+            continue;
 
-#if RETRO_REV0U
-    RegisterObject((Object **)&DefaultObject, ":DefaultObject:", sizeof(EntityBase), sizeof(ObjectDefaultObject), DefaultObject_Update,
-                   DefaultObject_LateUpdate, DefaultObject_StaticUpdate, DefaultObject_Draw, DefaultObject_Create, DefaultObject_StageLoad,
-                   DefaultObject_EditorLoad, DefaultObject_EditorDraw, DefaultObject_Serialize, (void (*)(Object *))DefaultObject_StaticLoad);
+        SetActiveMod(m);
+        if (LoadFile("Data/Game/Game.xml", &info)) {
+            tinyxml2::XMLDocument *doc = new tinyxml2::XMLDocument;
 
-    RegisterObject((Object **)&DevOutput, ":DevOutput:", sizeof(EntityDevOutput), sizeof(ObjectDevOutput), DevOutput_Update, DevOutput_LateUpdate,
-                   DevOutput_StaticUpdate, DevOutput_Draw, DevOutput_Create, DevOutput_StageLoad, DevOutput_EditorLoad, DevOutput_EditorDraw,
-                   DevOutput_Serialize, (void (*)(Object *))DevOutput_StaticLoad);
-#elif RETRO_REV02
-    RegisterObject((Object **)&DefaultObject, ":DefaultObject:", sizeof(EntityBase), sizeof(ObjectDefaultObject), DefaultObject_Update,
-                   DefaultObject_LateUpdate, DefaultObject_StaticUpdate, DefaultObject_Draw, DefaultObject_Create, DefaultObject_StageLoad,
-                   DefaultObject_EditorLoad, DefaultObject_EditorDraw, DefaultObject_Serialize);
+            char *xmlData = new char[info.fileSize + 1];
+            FileRead(xmlData, info.fileSize);
+            xmlData[info.fileSize] = 0;
 
-    RegisterObject((Object **)&DevOutput, ":DevOutput:", sizeof(EntityDevOutput), sizeof(ObjectDevOutput), DevOutput_Update, DevOutput_LateUpdate,
-                   DevOutput_StaticUpdate, DevOutput_Draw, DevOutput_Create, DevOutput_StageLoad, DevOutput_EditorLoad, DevOutput_EditorDraw,
-                   DevOutput_Serialize);
-#else // RETRO_REV01
-    RegisterObject((Object **)&DefaultObject, ":DefaultObject:", sizeof(EntityDefaultObject), sizeof(ObjectDefaultObject), DefaultObject_Update,
-                   DefaultObject_LateUpdate, DefaultObject_StaticUpdate, DefaultObject_Draw, DefaultObject_Create, DefaultObject_StageLoad,
-                   DefaultObject_EditorLoad, DefaultObject_EditorDraw, DefaultObject_Serialize);
-#endif
+            bool success = doc->Parse(xmlData) == tinyxml2::XML_SUCCESS;
 
-    globalObjectIDs[0] = TYPE_DEFAULTOBJECT;
-#if RETRO_REV02
-    globalObjectIDs[1] = TYPE_DEVOUTPUT;
-#endif
+            if (success) {
+                const tinyxml2::XMLElement *gameElement    = FirstXMLChildElement(doc, nullptr, "game");
+                const tinyxml2::XMLElement *paletteElement = FirstXMLChildElement(doc, gameElement, "palette");
+                if (paletteElement) {
+                    for (const tinyxml2::XMLElement *clrElement = paletteElement->FirstChildElement("color"); clrElement;
+                         clrElement = clrElement->NextSiblingElement("color")) {
+                        const tinyxml2::XMLAttribute *bankAttr = clrElement->FindAttribute("bank");
+                        int clrBank = 0;
+                        if (bankAttr)
+                            clrBank = bankAttr->IntValue();
 
-    globalObjectCount = TYPE_DEFAULT_COUNT;
+                        const tinyxml2::XMLAttribute *indAttr = clrElement->FindAttribute("index");
+                        int clrInd = 0;
+                        if (indAttr)
+                            clrInd = indAttr->IntValue();
 
-#if RETRO_REV02
-    EngineInfo info;
+                        const tinyxml2::XMLAttribute *rAttr = clrElement->FindAttribute("r");
+                        int clrR = 0;
+                        if (rAttr)
+                            clrR = rAttr->IntValue();
 
-    info.functionTable = RSDKFunctionTable;
-    info.APITable      = APIFunctionTable;
+                        const tinyxml2::XMLAttribute *gAttr = clrElement->FindAttribute("g");
+                        int clrG = 0;
+                        if (gAttr)
+                            clrG = gAttr->IntValue();
 
-    info.currentSKU = &SKU::curSKU;
-    info.gameInfo   = &gameVerInfo;
-    info.sceneInfo  = &sceneInfo;
+                        const tinyxml2::XMLAttribute *bAttr = clrElement->FindAttribute("b");
+                        int clrB = 0;
+                        if (bAttr)
+                            clrB = bAttr->IntValue();
 
-    info.controller = controller;
-    info.stickL     = stickL;
-    info.stickR     = stickR;
-    info.triggerL   = triggerL;
-    info.triggerR   = triggerR;
-    info.touchMouse = &touchInfo;
+                        SetPaletteEntry(clrBank, clrInd, clrR, clrG, clrB);
+                    }
 
-    info.unknown = &SKU::unknownInfo;
+                    for (const tinyxml2::XMLElement *clrsElement = paletteElement->FirstChildElement("colors"); clrsElement;
+                         clrsElement = clrsElement->NextSiblingElement("colors")) {
+                        const tinyxml2::XMLAttribute *bankAttr = clrsElement->FindAttribute("bank");
+                        int bank = 0;
+                        if (bankAttr)
+                            bank = bankAttr->IntValue();
 
-    info.screenInfo = screens;
+                        const tinyxml2::XMLAttribute *indAttr = clrsElement->FindAttribute("start");
+                        int index = 0;
+                        if (indAttr)
+                            index = indAttr->IntValue();
 
-#if RETRO_USE_MOD_LOADER
-    info.modTable = modFunctionTable;
-#endif
-#else
-    EngineInfo info;
+                        std::string text = clrsElement->GetText();
+                        // working: AABBFF #FFaaFF (12, 32, 34) (145 53 234)
+                        std::regex search(R"((?:#?([0-9A-F]{2})([0-9A-F]{2})([0-9A-F]{2}))|(?:\((\d+),?\s*(\d+),?\s*(\d+)\)))",
+                                          std::regex_constants::icase | std::regex_constants::ECMAScript);
+                        std::smatch match;
+                        while (std::regex_search(text, match, search)) {
+                            int r, g, b;
+                            int base, start;
+                            if (match[1].matched) {
+                                // we have hex
+                                base  = 16;
+                                start = 1;
+                            }
+                            else {
+                                // triplet
+                                base  = 10;
+                                start = 4;
+                            }
 
-    info.functionTable = RSDKFunctionTable;
+                            r = std::stoi(match[start + 0].str(), nullptr, base);
+                            g = std::stoi(match[start + 1].str(), nullptr, base);
+                            b = std::stoi(match[start + 2].str(), nullptr, base);
 
-    info.gameInfo = &gameVerInfo;
-    info.sceneInfo = &sceneInfo;
-
-    info.controllerInfo = controller;
-    info.stickInfo = stickL;
-    info.touchInfo = &touchInfo;
-
-    info.screenInfo = screens;
-
-#if RETRO_USE_MOD_LOADER
-    info.modTable = modFunctionTable;
-#endif
-#endif
-
-    bool32 linked = false;
-
-#if RETRO_USE_MOD_LOADER
-    if (!modSettings.disableGameLogic) {
-#endif
-        if (engine.useExternalCode) {
-            char buffer[0x100];
-#if RETRO_PLATFORM == RETRO_WIN
-            strcpy_s(buffer, 0x100, gameLogicName);
-#else
-        sprintf(buffer, "%s%s", SKU::userFileDir, gameLogicName);
-#endif
-            if (!gameLogicHandle)
-                gameLogicHandle = Link::Open(buffer);
-
-            if (gameLogicHandle) {
-                bool32 canLink = true;
-#if !RETRO_USE_ORIGINAL_CODE
-                int32 *RSDKRevision = (int32 *)Link::GetSymbol(gameLogicHandle, "RSDKRevision");
-                if (RSDKRevision) {
-                    canLink = *RSDKRevision == RETRO_REVISION;
-                    if (!canLink)
-                        PrintLog(PRINT_NORMAL, "ERROR: Game Logic RSDK Revision doesn't match Engine RSDK Revision!");
+                            SetPaletteEntry(bank, index++, r, g, b);
+                            text = match.suffix();
+                        }
+                    }
                 }
-#endif
+            }
 
-                LogicLinkHandle linkGameLogic = (LogicLinkHandle)Link::GetSymbol(gameLogicHandle, "LinkGameLogicDLL");
-                if (canLink && linkGameLogic) {
-#if RETRO_REV02
-                    linkGameLogic(&info);
-#else
-                linkGameLogic(info);
-#endif
-                    linked = true;
-                }
-                else if (canLink && !linkGameLogic) {
-                    PrintLog(PRINT_ERROR, "ERROR: Failed to find 'LinkGameLogicDLL' -> %s", Link::GetError());
+            delete[] xmlData;
+            delete doc;
+
+            CloseFile();
+        }
+    }
+    SetActiveMod(-1);
+}
+void RetroEngine::LoadXMLObjects()
+{
+    FileInfo info;
+    modObjCount = 0;
+
+    for (int m = 0; m < (int)modList.size(); ++m) {
+        if (!modList[m].active)
+            continue;
+
+        SetActiveMod(m);
+        if (LoadFile("Data/Game/Game.xml", &info)) {
+            tinyxml2::XMLDocument *doc = new tinyxml2::XMLDocument;
+
+            char *xmlData = new char[info.fileSize + 1];
+            FileRead(xmlData, info.fileSize);
+            xmlData[info.fileSize] = 0;
+
+            bool success = doc->Parse(xmlData) == tinyxml2::XML_SUCCESS;
+
+            if (success) {
+                const tinyxml2::XMLElement *gameElement    = FirstXMLChildElement(doc, nullptr, "game");
+                const tinyxml2::XMLElement *objectsElement = FirstXMLChildElement(doc, gameElement, "objects");
+                if (objectsElement) {
+                    const tinyxml2::XMLElement *objElement = FirstXMLChildElement(doc, objectsElement, "object");
+                    if (objElement) {
+                        do {
+                            const tinyxml2::XMLAttribute *nameAttr = FindXMLAttribute(objElement, "name");
+                            const char *objName                    = "unknownObject";
+                            if (nameAttr)
+                                objName = GetXMLAttributeValueString(nameAttr);
+
+                            const tinyxml2::XMLAttribute *scrAttr = FindXMLAttribute(objElement, "script");
+                            const char *objScript                 = "unknownObject.txt";
+                            if (scrAttr)
+                                objScript = GetXMLAttributeValueString(scrAttr);
+
+                            byte flags = 0;
+
+                            // forces the object to be loaded, this means the object doesn't have to be and *SHOULD NOT* be in the stage object list
+                            // if it is, it'll cause issues!!!!
+                            const tinyxml2::XMLAttribute *loadAttr = FindXMLAttribute(objElement, "forceLoad");
+                            int objForceLoad                       = false;
+                            if (loadAttr)
+                                objForceLoad = GetXMLAttributeValueBool(loadAttr);
+
+                            flags |= (objForceLoad & 1);
+
+                            StrCopy(modTypeNames[modObjCount], objName);
+                            StrCopy(modScriptPaths[modObjCount], objScript);
+                            modScriptFlags[modObjCount] = flags;
+                            modObjCount++;
+
+                        } while ((objElement = NextXMLSiblingElement(doc, objElement, "object")));
+                    }
                 }
             }
             else {
-                PrintLog(PRINT_ERROR, "ERROR: Failed to open game logic file -> %s", Link::GetError());
+                PrintLog("Failed to parse game.xml File!");
             }
 
-            if (!linked)
-                PrintLog(PRINT_NORMAL, "ERROR: Failed to link game logic!");
+            delete[] xmlData;
+            delete doc;
+
+            CloseFile();
         }
-        else {
-#if RETRO_REV02
-            linkGameLogic(&info);
-#else
-        linkGameLogic(info);
+    }
+    SetActiveMod(-1);
+}
+void RetroEngine::LoadXMLSoundFX()
+{
+    FileInfo info;
+    FileInfo infoStore;
+    for (int m = 0; m < (int)modList.size(); ++m) {
+        if (!modList[m].active)
+            continue;
+
+        SetActiveMod(m);
+        if (LoadFile("Data/Game/Game.xml", &info)) {
+            tinyxml2::XMLDocument *doc = new tinyxml2::XMLDocument;
+
+            char *xmlData = new char[info.fileSize + 1];
+            FileRead(xmlData, info.fileSize);
+            xmlData[info.fileSize] = 0;
+
+            bool success = doc->Parse(xmlData) == tinyxml2::XML_SUCCESS;
+
+            if (success) {
+                const tinyxml2::XMLElement *gameElement   = FirstXMLChildElement(doc, nullptr, "game");
+                const tinyxml2::XMLElement *soundsElement = FirstXMLChildElement(doc, gameElement, "sounds");
+                if (soundsElement) {
+                    const tinyxml2::XMLElement *sfxElement = FirstXMLChildElement(doc, soundsElement, "soundfx");
+                    if (sfxElement) {
+                        do {
+                            const tinyxml2::XMLAttribute *nameAttr = FindXMLAttribute(sfxElement, "name");
+                            const char *sfxName                    = "unknownSFX";
+                            if (nameAttr)
+                                sfxName = GetXMLAttributeValueString(nameAttr);
+
+                            const tinyxml2::XMLAttribute *valAttr = FindXMLAttribute(sfxElement, "path");
+                            const char *sfxPath                   = "unknownSFX.wav";
+                            if (valAttr)
+                                sfxPath = GetXMLAttributeValueString(valAttr);
+
+                            SetSfxName(sfxName, globalSFXCount);
+
+                            GetFileInfo(&infoStore);
+                            CloseFile();
+                            LoadSfx((char *)sfxPath, globalSFXCount);
+                            SetFileInfo(&infoStore);
+                            globalSFXCount++;
+
+                        } while ((sfxElement = NextXMLSiblingElement(doc, sfxElement, "soundfx")));
+                    }
+                }
+            }
+            else {
+                PrintLog("Failed to parse game.xml File!");
+            }
+
+            delete[] xmlData;
+            delete doc;
+
+            CloseFile();
+        }
+    }
+    SetActiveMod(-1);
+}
+void RetroEngine::LoadXMLPlayers(TextMenu *menu)
+{
+    FileInfo info;
+
+    for (int m = 0; m < (int)modList.size(); ++m) {
+        if (!modList[m].active)
+            continue;
+
+        SetActiveMod(m);
+        if (LoadFile("Data/Game/Game.xml", &info)) {
+            tinyxml2::XMLDocument *doc = new tinyxml2::XMLDocument;
+
+            char *xmlData = new char[info.fileSize + 1];
+            FileRead(xmlData, info.fileSize);
+            xmlData[info.fileSize] = 0;
+
+            bool success = doc->Parse(xmlData) == tinyxml2::XML_SUCCESS;
+
+            if (success) {
+                const tinyxml2::XMLElement *gameElement    = FirstXMLChildElement(doc, nullptr, "game");
+                const tinyxml2::XMLElement *playersElement = FirstXMLChildElement(doc, gameElement, "players");
+                if (playersElement) {
+                    const tinyxml2::XMLElement *plrElement = FirstXMLChildElement(doc, playersElement, "player");
+                    if (plrElement) {
+                        do {
+                            const tinyxml2::XMLAttribute *nameAttr = FindXMLAttribute(plrElement, "name");
+                            const char *plrName                    = "unknownPlayer";
+                            if (nameAttr)
+                                plrName = GetXMLAttributeValueString(nameAttr);
+
+                            if (menu)
+                                AddTextMenuEntry(menu, plrName);
+                            else
+                                StrCopy(playerNames[playerCount++], plrName);
+
+                        } while ((plrElement = NextXMLSiblingElement(doc, plrElement, "player")));
+                    }
+                }
+            }
+            else {
+                PrintLog("Failed to parse game.xml File!");
+            }
+
+            delete[] xmlData;
+            delete doc;
+
+            CloseFile();
+        }
+    }
+    SetActiveMod(-1);
+}
+void RetroEngine::LoadXMLStages(TextMenu *menu, int listNo)
+{
+    FileInfo info;
+    for (int m = 0; m < (int)modList.size(); ++m) {
+        if (!modList[m].active)
+            continue;
+
+        SetActiveMod(m);
+        if (LoadFile("Data/Game/Game.xml", &info)) {
+            tinyxml2::XMLDocument *doc = new tinyxml2::XMLDocument;
+
+            char *xmlData = new char[info.fileSize + 1];
+            FileRead(xmlData, info.fileSize);
+            xmlData[info.fileSize] = 0;
+
+            bool success = doc->Parse(xmlData) == tinyxml2::XML_SUCCESS;
+
+            if (success) {
+                const tinyxml2::XMLElement *gameElement = FirstXMLChildElement(doc, nullptr, "game");
+                const char *elementNames[]              = { "presentationStages", "regularStages", "bonusStages", "specialStages" };
+
+                for (int l = 0; l < STAGELIST_MAX; ++l) {
+                    const tinyxml2::XMLElement *listElement = FirstXMLChildElement(doc, gameElement, elementNames[l]);
+                    if (listElement) {
+                        const tinyxml2::XMLElement *stgElement = FirstXMLChildElement(doc, listElement, "stage");
+                        if (stgElement) {
+                            do {
+                                const tinyxml2::XMLAttribute *nameAttr = FindXMLAttribute(stgElement, "name");
+                                const char *stgName                    = "unknownStage";
+                                if (nameAttr)
+                                    stgName = GetXMLAttributeValueString(nameAttr);
+
+                                const tinyxml2::XMLAttribute *folderAttr = FindXMLAttribute(stgElement, "folder");
+                                const char *stgFolder                    = "unknownStageFolder";
+                                if (folderAttr)
+                                    stgFolder = GetXMLAttributeValueString(folderAttr);
+
+                                const tinyxml2::XMLAttribute *idAttr = FindXMLAttribute(stgElement, "id");
+                                const char *stgID                    = "unknownStageID";
+                                if (idAttr)
+                                    stgID = GetXMLAttributeValueString(idAttr);
+
+                                const tinyxml2::XMLAttribute *highlightAttr = FindXMLAttribute(stgElement, "highlight");
+                                bool stgHighlighted                         = false;
+                                if (highlightAttr)
+                                    stgHighlighted = GetXMLAttributeValueBool(highlightAttr);
+
+                                if (menu) {
+                                    if (listNo == 3 || listNo == 4) {
+                                        if ((listNo == 4 && l == 2) || (listNo == 3 && l == 3)) {
+                                            AddTextMenuEntry(menu, stgName);
+                                            menu->entryHighlight[menu->rowCount - 1] = stgHighlighted;
+                                        }
+                                    }
+                                    else if (listNo == l + 1) {
+                                        AddTextMenuEntry(menu, stgName);
+                                        menu->entryHighlight[menu->rowCount - 1] = stgHighlighted;
+                                    }
+                                }
+                                else {
+                                    StrCopy(stageList[l][stageListCount[l]].name, stgName);
+                                    StrCopy(stageList[l][stageListCount[l]].folder, stgFolder);
+                                    StrCopy(stageList[l][stageListCount[l]].id, stgID);
+                                    stageList[l][stageListCount[l]].highlighted = stgHighlighted;
+
+                                    stageListCount[l]++;
+                                }
+
+                            } while ((stgElement = NextXMLSiblingElement(doc, stgElement, "stage")));
+                        }
+                    }
+                }
+            }
+            else {
+                PrintLog("Failed to parse game.xml File!");
+            }
+
+            delete[] xmlData;
+            delete doc;
+
+            CloseFile();
+        }
+    }
+    SetActiveMod(-1);
+}
 #endif
-        }
+
+bool RetroEngine::LoadGameConfig(const char *filePath)
+{
+    FileInfo info;
+    byte fileBuffer  = 0;
+    byte fileBuffer2 = 0;
+    char strBuffer[0x40];
+    StrCopy(gameWindowText, "Retro-Engine"); // this is the default window name
+
+    globalVariablesCount = 0;
 #if RETRO_USE_MOD_LOADER
-    }
+    playerCount = 0;
+#endif
 
-    for (int32 m = 0; m < modList.size(); ++m) {
-        currentMod = &modList[m];
-        if (!currentMod->active)
-            break;
-        for (modLinkSTD linkModLogic : modList[m].linkModLogic) {
-            if (!linkModLogic(&info, modList[m].id.c_str())) {
-                modList[m].active = false;
-                PrintLog(PRINT_ERROR, "[MOD] Failed to link logic for mod %s!", modList[m].id.c_str());
+    bool loaded = LoadFile(filePath, &info);
+    if (loaded) {
+        FileRead(&fileBuffer, 1);
+        FileRead(gameWindowText, fileBuffer);
+        gameWindowText[fileBuffer] = 0;
+
+        FileRead(&fileBuffer, 1);
+        FileRead(gameDescriptionText, fileBuffer);
+        gameDescriptionText[fileBuffer] = 0;
+
+        byte buf[3];
+        for (int c = 0; c < 0x60; ++c) {
+            FileRead(buf, 3);
+            SetPaletteEntry(-1, c, buf[0], buf[1], buf[2]);
+        }
+
+        // Read Obect Names
+        byte objectCount = 0;
+        FileRead(&objectCount, 1);
+        for (byte o = 0; o < objectCount; ++o) {
+            FileRead(&fileBuffer, 1);
+            FileRead(&strBuffer, fileBuffer);
+        }
+
+        // Read Script Paths
+        for (byte s = 0; s < objectCount; ++s) {
+            FileRead(&fileBuffer, 1);
+            FileRead(&strBuffer, fileBuffer);
+        }
+
+        byte varCount = 0;
+        FileRead(&varCount, 1);
+        globalVariablesCount = varCount;
+        for (int v = 0; v < varCount; ++v) {
+            // Read Variable Name
+            FileRead(&fileBuffer, 1);
+            FileRead(&globalVariableNames[v], fileBuffer);
+            globalVariableNames[v][fileBuffer] = 0;
+
+            // Read Variable Value
+            FileRead(&fileBuffer2, 1);
+            globalVariables[v] = fileBuffer2 << 0;
+            FileRead(&fileBuffer2, 1);
+            globalVariables[v] += fileBuffer2 << 8;
+            FileRead(&fileBuffer2, 1);
+            globalVariables[v] += fileBuffer2 << 16;
+            FileRead(&fileBuffer2, 1);
+            globalVariables[v] += fileBuffer2 << 24;
+        }
+
+        // Read SFX
+        byte globalSFXCount = 0;
+        FileRead(&globalSFXCount, 1);
+        for (int s = 0; s < globalSFXCount; ++s) { // SFX Names
+            FileRead(&fileBuffer, 1);
+            FileRead(&strBuffer, fileBuffer);
+            strBuffer[fileBuffer] = 0;
+        }
+        for (byte s = 0; s < globalSFXCount; ++s) { // SFX Paths
+            FileRead(&fileBuffer, 1);
+            FileRead(&strBuffer, fileBuffer);
+            strBuffer[fileBuffer] = 0;
+        }
+
+        // Read Player Names
+        byte plrCount = 0;
+        FileRead(&plrCount, 1);
+        for (byte p = 0; p < plrCount; ++p) {
+            FileRead(&fileBuffer, 1);
+            FileRead(&strBuffer, fileBuffer);
+
+            // needed for PlayerName[] stuff in scripts
+#if !RETRO_USE_ORIGINAL_CODE
+            strBuffer[fileBuffer] = 0;
+            StrCopy(playerNames[p], strBuffer);
+            playerCount++;
+#endif
+        }
+
+        for (byte c = 0; c < 4; ++c) {
+            // Special Stages are stored as cat 2 in file, but cat 3 in game :(
+            int cat = c;
+            if (c == 2)
+                cat = 3;
+            else if (c == 3)
+                cat = 2;
+            stageListCount[cat] = 0;
+            FileRead(&fileBuffer, 1);
+            stageListCount[cat] = fileBuffer;
+            for (byte s = 0; s < stageListCount[cat]; ++s) {
+
+                // Read Stage Folder
+                FileRead(&fileBuffer, 1);
+                FileRead(&stageList[cat][s].folder, fileBuffer);
+                stageList[cat][s].folder[fileBuffer] = 0;
+
+                // Read Stage ID
+                FileRead(&fileBuffer, 1);
+                FileRead(&stageList[cat][s].id, fileBuffer);
+                stageList[cat][s].id[fileBuffer] = 0;
+
+                // Read Stage Name
+                FileRead(&fileBuffer, 1);
+                FileRead(&stageList[cat][s].name, fileBuffer);
+                stageList[cat][s].name[fileBuffer] = 0;
+
+                // Read Stage Mode
+                FileRead(&fileBuffer, 1);
+                stageList[cat][s].highlighted = fileBuffer;
             }
         }
+
+        CloseFile();
+
+#if RETRO_USE_MOD_LOADER
+        LoadXMLWindowText();
+        LoadXMLVariables();
+        LoadXMLPalettes();
+        LoadXMLObjects();
+        LoadXMLPlayers(NULL);
+        LoadXMLStages(NULL, 0);
+
+        SetGlobalVariableByName("options.devMenuFlag", devMenu ? 1 : 0);
+        SetGlobalVariableByName("engine.standalone", 1);
+#endif
     }
 
-    currentMod = NULL;
+#if RETRO_REV03
+    SetGlobalVariableByName("game.hasPlusDLC", !RSDK_AUTOBUILD);
 #endif
-}
 
-void RSDK::ProcessDebugCommands()
-{
+    // These need to be set every time its reloaded
+    nativeFunctionCount = 0;
+    AddNativeFunction("SetAchievement", SetAchievement);
+    AddNativeFunction("SetLeaderboard", SetLeaderboard);
+#if RETRO_USE_HAPTICS
+    AddNativeFunction("HapticEffect", HapticEffect);
+#endif
+    AddNativeFunction("Connect2PVS", Connect2PVS);
+    AddNativeFunction("Disconnect2PVS", Disconnect2PVS);
+    AddNativeFunction("SendEntity", SendEntity);
+    AddNativeFunction("SendValue", SendValue);
+    AddNativeFunction("ReceiveEntity", ReceiveEntity);
+    AddNativeFunction("ReceiveValue", ReceiveValue);
+    AddNativeFunction("TransmitGlobal", TransmitGlobal);
+    AddNativeFunction("ShowPromoPopup", ShowPromoPopup);
+
+    // Introduced in the Sega Forever versions of S1 (3.9.0) and S2 (1.7.0)
+    AddNativeFunction("NativePlayerWaitingAds", NativePlayerWaitingAds);
+    AddNativeFunction("NativeWaterPlayerWaitingAds", NativeWaterPlayerWaitingAds);
+
+#if RETRO_REV03
+    AddNativeFunction("NotifyCallback", NotifyCallback);
+#endif
+
+#if RETRO_USE_NETWORKING
+    AddNativeFunction("SetNetworkGameName", SetNetworkGameName);
+#endif
+
+#if RETRO_USE_MOD_LOADER
+    AddNativeFunction("ExitGame", ExitGame);
+    AddNativeFunction("FileExists", FileExists);
+    AddNativeFunction("OpenModMenu", OpenModMenu); // Opens the dev menu-based mod menu incase you cant be bothered or smth
+    AddNativeFunction("AddAchievement", AddGameAchievement);
+    AddNativeFunction("SetAchievementDescription", SetAchievementDescription);
+    AddNativeFunction("ClearAchievements", ClearAchievements);
+    AddNativeFunction("GetAchievementCount", GetAchievementCount);
+    AddNativeFunction("GetAchievement", GetAchievement);
+    AddNativeFunction("GetAchievementName", GetAchievementName);
+    AddNativeFunction("GetAchievementDescription", GetAchievementDescription);
+    AddNativeFunction("GetScreenWidth", GetScreenWidth);
+    AddNativeFunction("SetScreenWidth", SetScreenWidth);
+    AddNativeFunction("GetWindowScale", GetWindowScale);
+    AddNativeFunction("SetWindowScale", SetWindowScale);
+    AddNativeFunction("GetWindowScaleMode", GetWindowScaleMode);
+    AddNativeFunction("SetWindowScaleMode", SetWindowScaleMode);
+    AddNativeFunction("GetWindowFullScreen", GetWindowFullScreen);
+    AddNativeFunction("SetWindowFullScreen", SetWindowFullScreen);
+    AddNativeFunction("GetWindowBorderless", GetWindowBorderless);
+    AddNativeFunction("SetWindowBorderless", SetWindowBorderless);
+    AddNativeFunction("GetWindowVSync", GetWindowVSync);
+    AddNativeFunction("SetWindowVSync", SetWindowVSync);
+    AddNativeFunction("ApplyWindowChanges", ApplyWindowChanges); // Refresh window after changing window options
+    AddNativeFunction("GetModCount", GetModCount);
+    AddNativeFunction("GetModName", GetModName);
+    AddNativeFunction("GetModDescription", GetModDescription);
+    AddNativeFunction("GetModAuthor", GetModAuthor);
+    AddNativeFunction("GetModVersion", GetModVersion);
+    AddNativeFunction("GetModActive", GetModActive);
+    AddNativeFunction("SetModActive", SetModActive);
+    AddNativeFunction("MoveMod", MoveMod);
+    AddNativeFunction("RefreshEngine", RefreshEngine); // Reload engine after changing mod status
+#endif
+
 #if !RETRO_USE_ORIGINAL_CODE
-    if (!customSettings.enableControllerDebugging)
-        return;
-#endif
-
-    if (controller[CONT_P1].keySelect.press) {
-#if RETRO_REV0U
-        if (sceneInfo.state == ENGINESTATE_DEVMENU || RSDK::Legacy::gameMode == RSDK::Legacy::ENGINE_DEVMENU)
-#else
-        if (sceneInfo.state == ENGINESTATE_DEVMENU)
-#endif
-            CloseDevMenu();
-        else
-            OpenDevMenu();
+    if (strlen(Engine.startSceneFolder) && strlen(Engine.startSceneID)) {
+        SceneInfo *scene = &stageList[STAGELIST_BONUS][0xFE]; // slot 0xFF is used for "none" startStage
+        strcpy(scene->name, "_RSDK_SCENE");
+        strcpy(scene->folder, Engine.startSceneFolder);
+        strcpy(scene->id, Engine.startSceneID);
+        startList_Game  = STAGELIST_BONUS;
+        startStage_Game = 0xFE;
     }
 
-#if RETRO_REV0U
-    int32 state          = engine.version == 5 ? sceneInfo.state : Legacy::stageMode;
-    const int32 stepOver = engine.version == 5 ? (int32)ENGINESTATE_STEPOVER : (int32)Legacy::STAGEMODE_STEPOVER;
-#else
-    uint8 state = sceneInfo.state;
-    const uint8 stepOver = ENGINESTATE_STEPOVER;
+#if RETRO_REV03
+    Engine.usingOrigins = GetGlobalVariableID("game.playMode") != 0xFF;
+#endif
 #endif
 
-    bool32 framePaused = (state & stepOver) == stepOver;
-
-#if RETRO_REV02
-    if (triggerL[CONT_P1].keyBumper.down) {
-        if (triggerL[CONT_P1].keyTrigger.down || triggerL[CONT_P1].triggerDelta >= 0.3) {
-            if (!framePaused)
-                state ^= stepOver;
-        }
-        else {
-            if (framePaused)
-                state ^= stepOver;
-        }
-
-        framePaused = (state & stepOver) == stepOver;
-
-        if (framePaused) {
-            if (triggerR[CONT_P1].keyBumper.press)
-                engine.frameStep = true;
-        }
-        else {
-            engine.gameSpeed = (triggerR[CONT_P1].keyTrigger.down || triggerR[CONT_P1].triggerDelta >= 0.3) ? 8 : 1;
-        }
-    }
-    else {
-        if (engine.gameSpeed == 8)
-            engine.gameSpeed = 1;
-
-        if (framePaused)
-            state ^= stepOver;
-    }
-
-#if RETRO_REV0U
-    if (engine.version != 5)
-        Legacy::stageMode = state;
-    else
-#endif
-        sceneInfo.state = state;
-#else
-    if (controller[CONT_P1].keyBumperL.down) {
-        if (controller[CONT_P1].keyTriggerL.down || stickL[CONT_P1].triggerDeltaL >= 0.3) {
-            if (!framePaused)
-                sceneInfo.state ^= ENGINESTATE_STEPOVER;
-        }
-        else {
-            if (framePaused)
-                sceneInfo.state ^= ENGINESTATE_STEPOVER;
-        }
-
-        framePaused = (sceneInfo.state >> 2) & 1;
-        if (framePaused) {
-            if (controller[CONT_P1].keyBumperR.press)
-                engine.frameStep = true;
-        }
-        else {
-            engine.gameSpeed = (controller[CONT_P1].keyTriggerR.down || stickL[CONT_P1].triggerDeltaR >= 0.3) ? 8 : 1;
-        }
-    }
-    else {
-        if (engine.gameSpeed == 8)
-            engine.gameSpeed = 1;
-
-        if (framePaused)
-            sceneInfo.state ^= ENGINESTATE_STEPOVER;
-    }
-#endif
-}
-
-#ifdef __SWITCH__
-#include <switch.h>
-#include <stdlib.h>
-#include <stdio.h>
-#include <string.h>
-#include <sys/socket.h>
-#include <sys/errno.h>
-#include <arpa/inet.h>
-#include <unistd.h>
-#include "RetroEngine.hpp"
-
-static int32 s_nxlinkSock = -1;
-
-static void initNxLink()
-{
-    if (R_FAILED(socketInitializeDefault()))
-        return;
-
-    s_nxlinkSock = nxlinkStdio();
-    if (s_nxlinkSock >= 0)
-        printf("printf output now goes to nxlink server\n");
-    else
-        socketExit();
-}
-#endif
-
-void RSDK::InitCoreAPI()
-{
-#if RETRO_RENDERDEVICE_DIRECTX9 || RETRO_RENDERDEVICE_DIRECTX11
-    MSG Msg;
-    PeekMessage(&Msg, NULL, 0, 0, PM_REMOVE);
-    InitCommonControls();
-#endif
-
-#ifdef __SWITCH__
-    Result res;
-    if (R_FAILED(res = dynInitialize()))
-        diagAbortWithResult(res);
-#endif
-
-#if RETRO_RENDERDEVICE_SDL2 || RETRO_AUDIODEVICE_SDL2 || RETRO_INPUTDEVICE_SDL2
-    SDL_Init(0);
-#endif
-}
-void RSDK::ReleaseCoreAPI()
-{
-#if RETRO_RENDERDEVICE_SDL2 || RETRO_AUDIODEVICE_SDL2 || RETRO_INPUTDEVICE_SDL2
-    SDL_Quit();
-#endif
-
-#ifdef __SWITCH__
-    dynExit();
-#endif
-}
-
-void RSDK::InitConsole()
-{
-#if RETRO_PLATFORM == RETRO_WIN
-    AllocConsole();
-    AttachConsole(GetCurrentProcessId());
-
-    freopen("CON", "w", stdout);
-#endif
-
-#if RETRO_PLATFORM == RETRO_SWITCH
-    consoleInit(NULL);
-#endif
-}
-void RSDK::ReleaseConsole()
-{
-#if RETRO_PLATFORM == RETRO_WIN
-    FreeConsole();
-#endif
-}
-
-void RSDK::SendQuitMsg()
-{
-#if RETRO_RENDERDEVICE_DIRECTX9 || RETRO_RENDERDEVICE_DIRECTX11
-    PostQuitMessage(0);
-#endif
+    return loaded;
 }
