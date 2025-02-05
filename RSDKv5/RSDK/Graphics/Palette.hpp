@@ -1,118 +1,145 @@
 #ifndef PALETTE_H
 #define PALETTE_H
 
-namespace RSDK
-{
+#define PALETTE_COUNT       (0x8)
+#define PALETTE_COLOR_COUNT (0x100)
 
-#define PALETTE_BANK_COUNT (0x8)
-#define PALETTE_BANK_SIZE  (0x100)
-
-union Color {
-    uint8 bytes[4];
-    uint32 color;
+struct Color {
+    byte r;
+    byte g;
+    byte b;
+    byte a;
 };
 
-extern uint16 rgb32To16_R[0x100];
-extern uint16 rgb32To16_G[0x100];
-extern uint16 rgb32To16_B[0x100];
+struct PaletteEntry {
+    byte r;
+    byte g;
+    byte b;
+};
 
-extern uint16 globalPalette[PALETTE_BANK_COUNT][PALETTE_BANK_SIZE];
-extern uint16 activeGlobalRows[PALETTE_BANK_COUNT];
-extern uint16 activeStageRows[PALETTE_BANK_COUNT];
-extern uint16 stagePalette[PALETTE_BANK_COUNT][PALETTE_BANK_SIZE];
+// Palettes (as RGB565 Colors)
+extern PaletteEntry fullPalette32[PALETTE_COUNT][PALETTE_COLOR_COUNT];
+extern ushort fullPalette[PALETTE_COUNT][PALETTE_COLOR_COUNT];
+extern ushort *activePalette; // Pointers to the 256 color set thats active
+extern PaletteEntry *activePalette32;
 
-extern uint16 fullPalette[PALETTE_BANK_COUNT][PALETTE_BANK_SIZE];
+extern byte gfxLineBuffer[SCREEN_YSIZE]; // Pointers to active palette
+extern int GFX_LINESIZE;
+extern int GFX_LINESIZE_MINUSONE;
+extern int GFX_LINESIZE_DOUBLE;
+extern int GFX_FRAMEBUFFERSIZE;
+extern int GFX_FBUFFERMINUSONE;
 
-extern uint8 gfxLineBuffer[SCREEN_YSIZE]; // Pointers to active palette
+extern uint gfxPalette16to32[0x10000];
 
-extern int32 maskColor;
+extern int fadeMode;
+extern byte fadeA;
+extern byte fadeR;
+extern byte fadeG;
+extern byte fadeB;
 
-#if RETRO_REV02
-extern uint16 *tintLookupTable;
-#else
-extern uint16 tintLookupTable[0x10000];
-#endif
+extern int paletteMode;
 
-#define RGB888_TO_RGB565(r, g, b) ((b) >> 3) | (((g) >> 2) << 5) | (((r) >> 3) << 11)
+#define RGB888_TO_RGB5551(r, g, b) (2 * ((b) >> 3) | ((g) >> 3 << 6) | ((r) >> 3 << 11) | 0) // used in mobile vers
+#define RGB888_TO_RGB565(r, g, b)  ((b) >> 3) | (((g) >> 2) << 5) | (((r) >> 3) << 11) // used in pc vers
 
+#if RETRO_SOFTWARE_RENDER
 #define PACK_RGB888(r, g, b) RGB888_TO_RGB565(r, g, b)
-
-#if RETRO_REV02
-void LoadPalette(uint8 bankID, const char *filePath, uint16 disabledRows);
+#elif RETRO_USING_OPENGL
+#define PACK_RGB888(r, g, b) RGB888_TO_RGB5551(r, g, b)
 #endif
 
-inline void SetActivePalette(uint8 newActiveBank, int32 startLine, int32 endLine)
+void LoadPalette(const char *filePath, int paletteID, int startPaletteIndex, int startIndex, int endIndex);
+
+inline void SetActivePalette(byte newActivePal, int startLine, int endLine)
 {
-    if (newActiveBank < PALETTE_BANK_COUNT)
-        for (int32 l = startLine; l < endLine && l < SCREEN_YSIZE; l++) gfxLineBuffer[l] = newActiveBank;
-}
+#if RETRO_SOFTWARE_RENDER
+    if (newActivePal < PALETTE_COUNT)
+        for (int l = startLine; l < endLine && l < SCREEN_YSIZE; l++) gfxLineBuffer[l] = newActivePal;
 
-inline uint32 GetPaletteEntry(uint8 bankID, uint8 index)
-{
-    // 0xF800 = 1111 1000 0000 0000 = R
-    // 0x7E0  = 0000 0111 1110 0000 = G
-    // 0x1F   = 0000 0000 0001 1111 = B
-    uint16 clr = fullPalette[bankID & 7][index];
-
-    int32 R = (clr & 0xF800) << 8;
-    int32 G = (clr & 0x7E0) << 5;
-    int32 B = (clr & 0x1F) << 3;
-    return R | G | B;
-}
-
-inline void SetPaletteEntry(uint8 bankID, uint8 index, uint32 color)
-{
-    fullPalette[bankID][index] = rgb32To16_B[(color >> 0) & 0xFF] | rgb32To16_G[(color >> 8) & 0xFF] | rgb32To16_R[(color >> 16) & 0xFF];
-}
-
-inline void SetPaletteMask(uint32 color)
-{
-    maskColor = rgb32To16_B[(color >> 0) & 0xFF] | rgb32To16_G[(color >> 8) & 0xFF] | rgb32To16_R[(color >> 16) & 0xFF];
-}
-
-#if RETRO_REV02
-inline void SetTintLookupTable(uint16 *lookupTable) { tintLookupTable = lookupTable; }
-
-#if RETRO_USE_MOD_LOADER && RETRO_MOD_LOADER_VER >= 2
-inline uint16 *GetTintLookupTable() { return tintLookupTable; }
+    activePalette   = fullPalette[gfxLineBuffer[0]];
+    activePalette32 = fullPalette32[gfxLineBuffer[0]];
 #endif
+}
 
-#else
-inline uint16 *GetTintLookupTable() { return tintLookupTable; }
-#endif
-
-inline void CopyPalette(uint8 sourceBank, uint8 srcBankStart, uint8 destinationBank, uint8 destBankStart, uint8 count)
+inline void SetPaletteEntry(byte paletteIndex, byte index, byte r, byte g, byte b)
 {
-    if (sourceBank < PALETTE_BANK_COUNT && destinationBank < PALETTE_BANK_COUNT) {
-        for (int32 i = 0; i < count; ++i) {
-            fullPalette[destinationBank][destBankStart + i] = fullPalette[sourceBank][srcBankStart + i];
+    if (paletteIndex != 0xFF) {
+        fullPalette[paletteIndex][index]     = PACK_RGB888(r, g, b);
+        fullPalette32[paletteIndex][index].r = r;
+        fullPalette32[paletteIndex][index].g = g;
+        fullPalette32[paletteIndex][index].b = b;
+    }
+    else {
+        activePalette[index]     = PACK_RGB888(r, g, b);
+        activePalette32[index].r = r;
+        activePalette32[index].g = g;
+        activePalette32[index].b = b;
+    }
+}
+
+inline void SetPaletteEntryPacked(byte paletteIndex, byte index, uint color)
+{
+    fullPalette[paletteIndex][index] = PACK_RGB888((byte)(color >> 16), (byte)(color >> 8), (byte)(color >> 0));
+
+    fullPalette32[paletteIndex][index].r = (byte)(color >> 16);
+    fullPalette32[paletteIndex][index].g = (byte)(color >> 8);
+    fullPalette32[paletteIndex][index].b = (byte)(color >> 0);
+}
+
+inline uint GetPaletteEntryPacked(byte paletteIndex, byte index)
+{
+    PaletteEntry clr = fullPalette32[paletteIndex][index];
+    return (clr.r << 16) | (clr.g << 8) | (clr.b);
+}
+
+inline void CopyPalette(byte sourcePalette, byte srcPaletteStart, byte destinationPalette, byte destPaletteStart, byte count)
+{
+    if (sourcePalette < PALETTE_COUNT && destinationPalette < PALETTE_COUNT) {
+        for (int i = 0; i < count; ++i) {
+            fullPalette[destinationPalette][destPaletteStart + i]   = fullPalette[sourcePalette][srcPaletteStart + i];
+            fullPalette32[destinationPalette][destPaletteStart + i] = fullPalette32[sourcePalette][srcPaletteStart + i];
         }
     }
 }
 
-inline void RotatePalette(uint8 bankID, uint8 startIndex, uint8 endIndex, bool32 right)
+inline void RotatePalette(int palID, byte startIndex, byte endIndex, bool right)
 {
     if (right) {
-        uint16 startClr = fullPalette[bankID][endIndex];
-        for (int32 i = endIndex; i > startIndex; --i) fullPalette[bankID][i] = fullPalette[bankID][i - 1];
-        fullPalette[bankID][startIndex] = startClr;
+        ushort startClr         = fullPalette[palID][endIndex];
+        PaletteEntry startClr32 = fullPalette32[palID][endIndex];
+        for (int i = endIndex; i > startIndex; --i) {
+            fullPalette[palID][i]   = fullPalette[palID][i - 1];
+            fullPalette32[palID][i] = fullPalette32[palID][i - 1];
+        }
+        fullPalette[palID][startIndex]   = startClr;
+        fullPalette32[palID][startIndex] = startClr32;
     }
     else {
-        uint16 startClr = fullPalette[bankID][startIndex];
-        for (int32 i = startIndex; i < endIndex; ++i) fullPalette[bankID][i] = fullPalette[bankID][i + 1];
-        fullPalette[bankID][endIndex] = startClr;
+        ushort startClr         = fullPalette[palID][startIndex];
+        PaletteEntry startClr32 = fullPalette32[palID][startIndex];
+        for (int i = startIndex; i < endIndex; ++i) {
+            fullPalette[palID][i]   = fullPalette[palID][i + 1];
+            fullPalette32[palID][i] = fullPalette32[palID][i + 1];
+        }
+        fullPalette[palID][endIndex]   = startClr;
+        fullPalette32[palID][endIndex] = startClr32;
     }
 }
 
-#if RETRO_REV02
-void BlendColors(uint8 destBankID, uint32 *srcColorsA, uint32 *srcColorsB, int32 blendAmount, int32 startIndex, int32 count);
-#endif
-void SetPaletteFade(uint8 destBankID, uint8 srcBankA, uint8 srcBankB, int16 blendAmount, int32 startIndex, int32 endIndex);
+inline void SetFade(byte R, byte G, byte B, ushort A)
+{
+    fadeMode = 1;
+    fadeR    = R;
+    fadeG    = G;
+    fadeB    = B;
+    fadeA    = A > 0xFF ? 0xFF : A;
+}
 
-#if RETRO_REV0U
-#include "Legacy/PaletteLegacy.hpp"
+#if RETRO_REV00
+void SetLimitedFade(byte paletteID, byte R, byte G, byte B, ushort blendAmount, int startIndex, int endIndex);
+#else
+void SetPaletteFade(byte destPaletteID, byte srcPaletteA, byte srcPaletteB, ushort blendAmount, int startIndex, int endIndex);
 #endif
 
-} // namespace RSDK
-
-#endif
+#endif // !PALETTE_H
