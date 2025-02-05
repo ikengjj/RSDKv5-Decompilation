@@ -1,4 +1,4 @@
-#include "RetroEngine.hpp"
+#include "RSDK/Graphics/RetroEngine.hpp"
 
 struct GifDecoder {
     int depth;
