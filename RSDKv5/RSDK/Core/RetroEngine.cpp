@@ -1,4 +1,4 @@
-#include "RetroEngine.hpp"
+#include "RSDK/Core/RetroEngine.hpp"
 
 #if !RETRO_USE_ORIGINAL_CODE
 bool usingCWD        = false;
